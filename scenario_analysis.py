@@ -24,9 +24,15 @@ def configure_matplotlib_for_chinese():
     plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
+    return len(usable) > 0
 
 
-configure_matplotlib_for_chinese()
+HAS_CJK_FONT = configure_matplotlib_for_chinese()
+
+
+def t(cn, en):
+    """若环境缺少中文字体，图表自动退回英文，避免方框。"""
+    return cn if HAS_CJK_FONT else en
 
 
 class ScenarioAnalysis:
@@ -386,11 +392,23 @@ class ScenarioAnalysis:
         for scenario_id, forecast_data in self.scenario_forecasts.items():
             forecast_df = forecast_data['forecast_df']
 
-            # 预警阈值
+            # 预警阈值（按历史分位数自适应，避免固定阈值导致“全红”）
             warning_thresholds = {
-                'growth_gap': {'yellow': -1.0, 'orange': -1.5, 'red': -2.0},
-                'maturity_rate': {'yellow': 0.006, 'orange': 0.007, 'red': 0.008},
-                'high_rate_maturity': {'yellow': 150, 'orange': 165, 'red': 180}
+                'growth_gap': {
+                    'yellow': self.historical_data['growth_gap'].quantile(0.3),
+                    'orange': self.historical_data['growth_gap'].quantile(0.2),
+                    'red': self.historical_data['growth_gap'].quantile(0.1)
+                },
+                'maturity_rate': {
+                    'yellow': self.historical_data['maturity_rate'].quantile(0.7),
+                    'orange': self.historical_data['maturity_rate'].quantile(0.8),
+                    'red': self.historical_data['maturity_rate'].quantile(0.9)
+                },
+                'high_rate_maturity': {
+                    'yellow': self.historical_data['high_rate_maturity'].quantile(0.7),
+                    'orange': self.historical_data['high_rate_maturity'].quantile(0.8),
+                    'red': self.historical_data['high_rate_maturity'].quantile(0.9)
+                }
             }
 
             warning_stats = {
@@ -404,33 +422,48 @@ class ScenarioAnalysis:
             # 逐季度评估
             for idx, row in forecast_df.iterrows():
                 warning_level = 0
+                indicator_levels = []
 
                 # 检查增长缺口
                 growth_gap = row['growth_gap_mean']
                 if growth_gap < warning_thresholds['growth_gap']['red']:
-                    warning_level = max(warning_level, 3)
+                    indicator_levels.append(3)
                 elif growth_gap < warning_thresholds['growth_gap']['orange']:
-                    warning_level = max(warning_level, 2)
+                    indicator_levels.append(2)
                 elif growth_gap < warning_thresholds['growth_gap']['yellow']:
-                    warning_level = max(warning_level, 1)
+                    indicator_levels.append(1)
+                else:
+                    indicator_levels.append(0)
 
                 # 检查存款到期率
                 maturity_rate = row['maturity_rate_mean']
                 if maturity_rate > warning_thresholds['maturity_rate']['red']:
-                    warning_level = max(warning_level, 3)
+                    indicator_levels.append(3)
                 elif maturity_rate > warning_thresholds['maturity_rate']['orange']:
-                    warning_level = max(warning_level, 2)
+                    indicator_levels.append(2)
                 elif maturity_rate > warning_thresholds['maturity_rate']['yellow']:
-                    warning_level = max(warning_level, 1)
+                    indicator_levels.append(1)
+                else:
+                    indicator_levels.append(0)
 
                 # 检查高息到期规模
                 high_rate_maturity = row['high_rate_maturity_mean']
                 if high_rate_maturity > warning_thresholds['high_rate_maturity']['red']:
-                    warning_level = max(warning_level, 3)
+                    indicator_levels.append(3)
                 elif high_rate_maturity > warning_thresholds['high_rate_maturity']['orange']:
-                    warning_level = max(warning_level, 2)
+                    indicator_levels.append(2)
                 elif high_rate_maturity > warning_thresholds['high_rate_maturity']['yellow']:
-                    warning_level = max(warning_level, 1)
+                    indicator_levels.append(1)
+                else:
+                    indicator_levels.append(0)
+
+                # 三指标共振逻辑（避免“只要一个指标高就直接红色”）
+                if indicator_levels.count(3) >= 2:
+                    warning_level = 3
+                elif indicator_levels.count(2) >= 2 or (indicator_levels.count(3) >= 1 and indicator_levels.count(2) >= 1):
+                    warning_level = 2
+                elif sum([1 for x in indicator_levels if x >= 1]) >= 2:
+                    warning_level = 1
 
                 # 记录预警详情
                 warning_stats['warning_details'].append({
@@ -519,8 +552,8 @@ class ScenarioAnalysis:
                      linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
         ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-        ax1.set_title('增长缺口预测对比', fontsize=12, fontweight='bold')
-        ax1.set_ylabel('增速偏离度 (%)')
+        ax1.set_title(t('增长缺口预测对比', 'Growth-gap Forecast Comparison'), fontsize=12, fontweight='bold')
+        ax1.set_ylabel(t('增速偏离度 (%)', 'Growth Gap (%)'))
         ax1.legend(loc='best')
         ax1.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
@@ -533,8 +566,8 @@ class ScenarioAnalysis:
                      's-', color=colors[scenario_id],
                      linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
-        ax2.set_title('存款到期率预测对比', fontsize=12, fontweight='bold')
-        ax2.set_ylabel('到期率')
+        ax2.set_title(t('存款到期率预测对比', 'Maturity-rate Forecast Comparison'), fontsize=12, fontweight='bold')
+        ax2.set_ylabel(t('到期率', 'Maturity Rate'))
         ax2.legend(loc='best')
         ax2.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
@@ -547,9 +580,9 @@ class ScenarioAnalysis:
                      '^-', color=colors[scenario_id],
                      linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
-        ax3.set_title('高息到期规模预测对比', fontsize=12, fontweight='bold')
-        ax3.set_ylabel('高息到期规模')
-        ax3.set_xlabel('季度')
+        ax3.set_title(t('高息到期规模预测对比', 'High-rate Maturity Forecast Comparison'), fontsize=12, fontweight='bold')
+        ax3.set_ylabel(t('高息到期规模', 'High-rate Maturity Size'))
+        ax3.set_xlabel(t('季度', 'Quarter'))
         ax3.legend(loc='best')
         ax3.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
@@ -562,16 +595,20 @@ class ScenarioAnalysis:
                      '*-', color=colors[scenario_id],
                      linewidth=2.2, markersize=9, label=f'情景{scenario_id}')
 
-        ax4.set_title('存款搬家风险评分对比', fontsize=12, fontweight='bold')
-        ax4.set_ylabel('风险评分 (0-10)')
+        ax4.set_title(t('存款搬家风险评分对比', 'Relocation Risk-score Comparison'), fontsize=12, fontweight='bold')
+        ax4.set_ylabel(t('风险评分 (0-10)', 'Risk Score (0-10)'))
         ax4.set_ylim(0, 10)
-        ax4.axhspan(7, 10, color='#d62728', alpha=0.08, label='高风险区(7-10)')
-        ax4.axhspan(4, 7, color='#ff7f0e', alpha=0.08, label='中风险区(4-7)')
+        ax4.axhspan(7, 10, color='#d62728', alpha=0.08, label=t('高风险区(7-10)', 'High Risk (7-10)'))
+        ax4.axhspan(4, 7, color='#ff7f0e', alpha=0.08, label=t('中风险区(4-7)', 'Medium Risk (4-7)'))
         ax4.legend(loc='best')
         ax4.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
 
-        plt.suptitle('2026-2027年居民存款流向情景分析\n四图联动展示关键指标与风险评分', fontsize=15, fontweight='bold', y=1.02)
+        plt.suptitle(
+            t('2026-2027年居民存款流向情景分析\n四图联动展示关键指标与风险评分',
+              '2026-2027 Deposit-flow Scenario Analysis\n4-panel view of key indicators and risk scores'),
+            fontsize=15, fontweight='bold', y=1.02
+        )
         plt.tight_layout()
 
         if save_path:

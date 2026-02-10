@@ -35,9 +35,14 @@ def configure_matplotlib_for_chinese():
         print("警告: 未检测到中文字体，图中文字可能显示异常。")
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
+    return len(usable) > 0
 
 
-configure_matplotlib_for_chinese()
+HAS_CJK_FONT = configure_matplotlib_for_chinese()
+
+
+def t(cn, en):
+    return cn if HAS_CJK_FONT else en
 
 class DepositRelocationAnalyzer:
     """
@@ -324,18 +329,18 @@ class DepositRelocationAnalyzer:
 
         # 1. 增长缺口
         ax1 = axes[0]
-        ax1.plot(self.df['date'], self.df['growth_gap'], color='#1f77b4', linewidth=2.0, label='增速偏离度')
+        ax1.plot(self.df['date'], self.df['growth_gap'], color='#1f77b4', linewidth=2.0, label=t('增速偏离度', 'Growth Gap'))
 
         # 绘制阈值线（如果可用）
         if 'growth_gap' in self.df.columns and len(self.df) > 0:
             growth_gap_20pct = self.df['growth_gap'].quantile(0.2)
             ax1.axhline(y=growth_gap_20pct, color='#d62728',
-                       linestyle='--', alpha=0.8, linewidth=1.5, label='20%分位阈值')
+                       linestyle='--', alpha=0.8, linewidth=1.5, label=t('20%分位阈值', '20% Quantile'))
 
         # 标记存款搬家阶段
         ax1.fill_between(self.df['date'], ax1.get_ylim()[0], ax1.get_ylim()[1],
                          where=self.df['relocation_flag']==1,
-                         color='#d62728', alpha=0.12, label='识别为存款搬家阶段')
+                         color='#d62728', alpha=0.12, label=t('识别为存款搬家阶段', 'Detected Relocation Period'))
 
         # 额外标注“已知阶段”用于对照
         if known_periods is None:
@@ -349,9 +354,9 @@ class DepositRelocationAnalyzer:
                 known_mask = known_mask | ((quarter_series >= start_p) & (quarter_series <= end_p))
             ax1.fill_between(
                 self.df['date'], ax1.get_ylim()[0], ax1.get_ylim()[1],
-                where=known_mask, color='#1f77b4', alpha=0.07, label='已知历史阶段(对照)'
+                where=known_mask, color='#1f77b4', alpha=0.07, label=t('已知历史阶段(对照)', 'Known Periods (Reference)')
             )
-        ax1.set_ylabel('增速偏离度 (%)')
+        ax1.set_ylabel(t('增速偏离度 (%)', 'Growth Gap (%)'))
         ax1.legend(loc='upper right')
         ax1.grid(True, alpha=0.3, linestyle=':')
 
@@ -359,17 +364,17 @@ class DepositRelocationAnalyzer:
         ax2 = axes[1]
         if 'maturity_rate' in self.df.columns:
             ax2.plot(self.df['date'], self.df['maturity_rate'], color='#2ca02c',
-                    linewidth=2.0, label='存款到期率')
+                    linewidth=2.0, label=t('存款到期率', 'Maturity Rate'))
 
             # 绘制阈值线
             maturity_rate_80pct = self.df['maturity_rate'].quantile(0.8)
             ax2.axhline(y=maturity_rate_80pct, color='#d62728',
-                       linestyle='--', alpha=0.8, linewidth=1.5, label='80%分位阈值')
+                       linestyle='--', alpha=0.8, linewidth=1.5, label=t('80%分位阈值', '80% Quantile'))
 
             ax2.fill_between(self.df['date'], ax2.get_ylim()[0], ax2.get_ylim()[1],
                              where=self.df['relocation_flag']==1,
                              color='#d62728', alpha=0.12)
-        ax2.set_ylabel('存款到期率')
+        ax2.set_ylabel(t('存款到期率', 'Maturity Rate'))
         ax2.legend(loc='upper right')
         ax2.grid(True, alpha=0.3, linestyle=':')
 
@@ -377,18 +382,18 @@ class DepositRelocationAnalyzer:
         ax3 = axes[2]
         if 'high_rate_maturity' in self.df.columns:
             ax3.plot(self.df['date'], self.df['high_rate_maturity'], color='#ff7f0e',
-                    linewidth=2.0, label='高息到期规模')
+                    linewidth=2.0, label=t('高息到期规模', 'High-rate Maturity Size'))
 
             # 绘制阈值线
             tcmpi_80pct = self.df['high_rate_maturity'].quantile(0.8)
             ax3.axhline(y=tcmpi_80pct, color='#d62728',
-                       linestyle='--', alpha=0.8, linewidth=1.5, label='80%分位阈值')
+                       linestyle='--', alpha=0.8, linewidth=1.5, label=t('80%分位阈值', '80% Quantile'))
 
             ax3.fill_between(self.df['date'], ax3.get_ylim()[0], ax3.get_ylim()[1],
                              where=self.df['relocation_flag']==1,
                              color='#d62728', alpha=0.12)
-        ax3.set_ylabel('高息到期规模')
-        ax3.set_xlabel('日期')
+        ax3.set_ylabel(t('高息到期规模', 'High-rate Maturity Size'))
+        ax3.set_xlabel(t('日期', 'Date'))
         ax3.legend(loc='upper right')
         ax3.grid(True, alpha=0.3, linestyle=':')
 
@@ -399,7 +404,8 @@ class DepositRelocationAnalyzer:
                 start_q = pd.Period(period['start_date'], freq='Q')
                 end_q = pd.Period(period['end_date'], freq='Q')
                 ax1.annotate(
-                    f"阶段{i}\n{start_q.year}Q{start_q.quarter}~{end_q.year}Q{end_q.quarter}",
+                    (f"阶段{i}\n{start_q.year}Q{start_q.quarter}~{end_q.year}Q{end_q.quarter}" if HAS_CJK_FONT
+                     else f"P{i}\n{start_q.year}Q{start_q.quarter}~{end_q.year}Q{end_q.quarter}"),
                     xy=(mid_date, ax1.get_ylim()[1] * 0.88),
                     xytext=(0, 0),
                     textcoords='offset points',
@@ -410,7 +416,11 @@ class DepositRelocationAnalyzer:
                     bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='#d62728', alpha=0.7)
                 )
 
-        fig.suptitle('中国居民存款“搬家”阶段识别（2005-2025）\n红色=模型识别，蓝色=已知历史阶段对照', fontsize=15)
+        fig.suptitle(
+            t('中国居民存款“搬家”阶段识别（2005-2025）\n红色=模型识别，蓝色=已知历史阶段对照',
+              'China Deposit Relocation Detection (2005-2025)\nRed=Model Detection, Blue=Known Reference'),
+            fontsize=15
+        )
 
         if save_path:
             plt.savefig(save_path, dpi=320, bbox_inches='tight')

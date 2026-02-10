@@ -19,9 +19,14 @@ def configure_matplotlib_for_chinese():
     plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
+    return len(usable) > 0
 
 
-configure_matplotlib_for_chinese()
+HAS_CJK_FONT = configure_matplotlib_for_chinese()
+
+
+def t(cn, en):
+    return cn if HAS_CJK_FONT else en
 
 class EarlyWarningSystem:
     """
@@ -225,16 +230,18 @@ class EarlyWarningSystem:
         if 'growth_gap' in self.df.columns:
             ax2 = ax.twinx()
             ax2.plot(self.df['date'], self.df['growth_gap'],
-                    color='#1f77b4', linewidth=1.5, alpha=0.65, label='增速偏离度')
-            ax2.set_ylabel('增速偏离度 (%)', color='b')
+                    color='#1f77b4', linewidth=1.5, alpha=0.65, label=t('增速偏离度', 'Growth Gap'))
+            ax2.set_ylabel(t('增速偏离度 (%)', 'Growth Gap (%)'), color='b')
             ax2.tick_params(axis='y', labelcolor='b')
             ax2.legend(loc='upper left')
 
         ax.set_yticks([0, 1, 2, 3])
-        ax.set_yticklabels(['无预警', '黄色', '橙色', '红色'])
-        ax.set_ylabel('预警级别')
-        ax.set_xlabel('日期')
-        ax.set_title('存款到期压力预警时间线（2005-2025）\n颜色越深风险越高', fontsize=13, fontweight='bold')
+        ax.set_yticklabels([t('无预警', 'None'), t('黄色', 'Yellow'), t('橙色', 'Orange'), t('红色', 'Red')])
+        ax.set_ylabel(t('预警级别', 'Warning Level'))
+        ax.set_xlabel(t('日期', 'Date'))
+        ax.set_title(t('存款到期压力预警时间线（2005-2025）\n颜色越深风险越高',
+                       'Deposit Maturity Pressure Timeline (2005-2025)\nDarker color = higher risk'),
+                     fontsize=13, fontweight='bold')
         ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3, linestyle=':')
 
@@ -244,7 +251,7 @@ class EarlyWarningSystem:
             ax.scatter(
                 self.warning_signals.loc[red_mask, 'date'],
                 self.warning_signals.loc[red_mask, 'warning_level'],
-                color='#8b0000', s=36, zorder=5, label='红色预警时点'
+                color='#8b0000', s=36, zorder=5, label=t('红色预警时点', 'Red Warning Points')
             )
 
         plt.tight_layout()
