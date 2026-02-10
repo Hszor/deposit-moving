@@ -105,22 +105,21 @@ class DepositRelocationAnalyzer:
         if 'relocation_flag' not in self.df.columns:
             return []
 
-        flag_diff = self.df['relocation_flag'].diff()
-        start_indices = flag_diff[flag_diff == 1].index
-        end_indices = flag_diff[flag_diff == -1].index
-
+        flags = self.df['relocation_flag'].fillna(0).astype(int)
         periods = []
+        in_period = False
+        start_idx = None
 
-        # 如果开始索引不为空
-        if len(start_indices) > 0:
-            for i, start_idx in enumerate(start_indices):
-                if i < len(end_indices):
-                    end_idx = end_indices[i]
-                else:
-                    # 如果只有开始没有结束，说明持续到数据末尾
-                    end_idx = self.df.index[-1]
+        for idx, flag in flags.items():
+            # 进入阶段
+            if flag == 1 and not in_period:
+                start_idx = idx
+                in_period = True
 
-                period_duration = (end_idx - start_idx) + 1
+            # 退出阶段：当前点已经是0，阶段结束于前一个样本点
+            elif flag == 0 and in_period:
+                end_idx = self.df.index[self.df.index.get_loc(idx) - 1]
+                period_duration = self.df.index.get_loc(end_idx) - self.df.index.get_loc(start_idx) + 1
 
                 periods.append({
                     'start_date': self.df.loc[start_idx, 'date'],
@@ -129,6 +128,20 @@ class DepositRelocationAnalyzer:
                     'start_idx': start_idx,
                     'end_idx': end_idx
                 })
+                in_period = False
+
+        # 若阶段持续到样本末尾
+        if in_period:
+            end_idx = self.df.index[-1]
+            period_duration = self.df.index.get_loc(end_idx) - self.df.index.get_loc(start_idx) + 1
+
+            periods.append({
+                'start_date': self.df.loc[start_idx, 'date'],
+                'end_date': self.df.loc[end_idx, 'date'],
+                'duration': period_duration,
+                'start_idx': start_idx,
+                'end_idx': end_idx
+            })
 
         self.relocation_periods = periods
         return periods
