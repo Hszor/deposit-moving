@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats
+from matplotlib import font_manager
 
 
 # 中国2005-2025年常被讨论的居民存款“搬家”阶段（季度口径）
@@ -18,9 +19,25 @@ KNOWN_RELOCATION_PERIODS_2005_2025 = [
     ('2024Q2', '2025Q1'),  # 利率下行与资产再配置阶段
 ]
 
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-plt.style.use('seaborn-v0_8-whitegrid')
+def configure_matplotlib_for_chinese():
+    """尽量自动选择可用中文字体，避免图中文字显示为方框。"""
+    candidates = [
+        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
+        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
+        'Arial Unicode MS'
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    usable = [f for f in candidates if f in available]
+    if usable:
+        plt.rcParams['font.sans-serif'] = usable + ['DejaVu Sans']
+    else:
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        print("警告: 未检测到中文字体，图中文字可能显示异常。")
+    plt.rcParams['axes.unicode_minus'] = False
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+
+configure_matplotlib_for_chinese()
 
 class DepositRelocationAnalyzer:
     """
@@ -232,30 +249,34 @@ class DepositRelocationAnalyzer:
         if 'relocation_flag' not in self.df.columns:
             return []
 
-        flag_diff = self.df['relocation_flag'].diff()
-        start_indices = flag_diff[flag_diff == 1].index
-        end_indices = flag_diff[flag_diff == -1].index
-
+        flags = self.df['relocation_flag'].astype(int).values
         periods = []
+        start_idx = None
 
-        # 如果开始索引不为空
-        if len(start_indices) > 0:
-            for i, start_idx in enumerate(start_indices):
-                if i < len(end_indices):
-                    end_idx = end_indices[i]
-                else:
-                    # 如果只有开始没有结束，说明持续到数据末尾
-                    end_idx = self.df.index[-1]
-
-                period_duration = (end_idx - start_idx) + 1
-
+        for i, flag in enumerate(flags):
+            if flag == 1 and start_idx is None:
+                start_idx = i
+            if flag == 0 and start_idx is not None:
+                end_idx = i - 1
                 periods.append({
                     'start_date': self.df.loc[start_idx, 'date'],
                     'end_date': self.df.loc[end_idx, 'date'],
-                    'duration': period_duration,
+                    'duration': (end_idx - start_idx) + 1,
                     'start_idx': start_idx,
                     'end_idx': end_idx
                 })
+                start_idx = None
+
+        # 持续到末尾
+        if start_idx is not None:
+            end_idx = len(flags) - 1
+            periods.append({
+                'start_date': self.df.loc[start_idx, 'date'],
+                'end_date': self.df.loc[end_idx, 'date'],
+                'duration': (end_idx - start_idx) + 1,
+                'start_idx': start_idx,
+                'end_idx': end_idx
+            })
 
         self.relocation_periods = periods
         return periods
@@ -293,13 +314,13 @@ class DepositRelocationAnalyzer:
 
         return pd.DataFrame(period_stats)
 
-    def plot_relocation_timeline(self, save_path=None):
+    def plot_relocation_timeline(self, save_path=None, known_periods=None):
         """绘制存款搬家时间线"""
         if 'relocation_flag' not in self.df.columns:
             print("请先运行identify_relocation_periods方法")
             return
 
-        fig, axes = plt.subplots(3, 1, figsize=(16, 11), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(16, 11), sharex=True, constrained_layout=True)
 
         # 1. 增长缺口
         ax1 = axes[0]
@@ -315,6 +336,21 @@ class DepositRelocationAnalyzer:
         ax1.fill_between(self.df['date'], ax1.get_ylim()[0], ax1.get_ylim()[1],
                          where=self.df['relocation_flag']==1,
                          color='#d62728', alpha=0.12, label='识别为存款搬家阶段')
+
+        # 额外标注“已知阶段”用于对照
+        if known_periods is None:
+            known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
+        if 'date' in self.df.columns and known_periods:
+            quarter_series = pd.to_datetime(self.df['date']).dt.to_period('Q')
+            known_mask = pd.Series(False, index=self.df.index)
+            for start_q, end_q in known_periods:
+                start_p = self._to_period(start_q)
+                end_p = self._to_period(end_q)
+                known_mask = known_mask | ((quarter_series >= start_p) & (quarter_series <= end_p))
+            ax1.fill_between(
+                self.df['date'], ax1.get_ylim()[0], ax1.get_ylim()[1],
+                where=known_mask, color='#1f77b4', alpha=0.07, label='已知历史阶段(对照)'
+            )
         ax1.set_ylabel('增速偏离度 (%)')
         ax1.legend(loc='upper right')
         ax1.grid(True, alpha=0.3, linestyle=':')
@@ -374,8 +410,7 @@ class DepositRelocationAnalyzer:
                     bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='#d62728', alpha=0.7)
                 )
 
-        plt.suptitle('中国居民存款“搬家”阶段识别（2005-2025）\n三指标共振 + 持续性窗口', fontsize=15, y=1.02)
-        plt.tight_layout()
+        fig.suptitle('中国居民存款“搬家”阶段识别（2005-2025）\n红色=模型识别，蓝色=已知历史阶段对照', fontsize=15)
 
         if save_path:
             plt.savefig(save_path, dpi=320, bbox_inches='tight')

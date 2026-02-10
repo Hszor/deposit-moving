@@ -9,12 +9,24 @@ import matplotlib.pyplot as plt
 import warnings
 import json
 import os
+from matplotlib import font_manager
 
 warnings.filterwarnings('ignore')
 
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-plt.style.use('seaborn-v0_8-whitegrid')
+def configure_matplotlib_for_chinese():
+    candidates = [
+        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
+        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
+        'Arial Unicode MS'
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    usable = [f for f in candidates if f in available]
+    plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+
+configure_matplotlib_for_chinese()
 
 
 class ScenarioAnalysis:

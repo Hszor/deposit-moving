@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
+from matplotlib import font_manager
 
 warnings.filterwarnings('ignore')
 
@@ -19,9 +20,20 @@ from historical_analysis import (
 from warning_system import EarlyWarningSystem
 from scenario_analysis import ScenarioAnalysis
 
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
-plt.style.use('seaborn-v0_8-whitegrid')
+def configure_matplotlib_for_chinese():
+    candidates = [
+        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
+        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
+        'Arial Unicode MS'
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    usable = [f for f in candidates if f in available]
+    plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    plt.style.use('seaborn-v0_8-whitegrid')
+
+
+configure_matplotlib_for_chinese()
 
 
 def print_section(title):
@@ -91,6 +103,8 @@ def run_historical_analysis(df, use_known_period_calibration=True):
             f"召回率={calibration_result['recall']:.3f}"
         )
         print(f"  最优阈值={calibration_result['threshold_config']}")
+        print(f"  已知历史阶段数量={len(KNOWN_RELOCATION_PERIODS_2005_2025)}")
+        print(f"  模型识别阶段数量={len(analyzer.relocation_periods)}")
     else:
         analyzer.identify_relocation_periods(window=2)
 
