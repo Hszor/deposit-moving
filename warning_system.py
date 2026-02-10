@@ -17,6 +17,7 @@ def configure_matplotlib_for_chinese():
     available = {f.name for f in font_manager.fontManager.ttflist}
     usable = [f for f in candidates if f in available]
     plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
+    plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
     return len(usable) > 0
@@ -262,8 +263,12 @@ class EarlyWarningSystem:
 
     def _get_warning_label(self, level):
         """获取预警级别标签"""
-        labels = {1: '黄色', 2: '橙色', 3: '红色'}
-        return labels.get(level, '未知')
+        labels = {
+            1: t('黄色', 'Yellow'),
+            2: t('橙色', 'Orange'),
+            3: t('红色', 'Red')
+        }
+        return labels.get(level, t('未知', 'Unknown'))
 
     def get_warning_statistics(self):
         """获取预警统计信息"""

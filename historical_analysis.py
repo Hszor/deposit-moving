@@ -33,6 +33,7 @@ def configure_matplotlib_for_chinese():
     else:
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
         print("警告: 未检测到中文字体，图中文字可能显示异常。")
+    plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
     return len(usable) > 0

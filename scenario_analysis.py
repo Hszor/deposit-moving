@@ -22,6 +22,7 @@ def configure_matplotlib_for_chinese():
     available = {f.name for f in font_manager.fontManager.ttflist}
     usable = [f for f in candidates if f in available]
     plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
+    plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
     return len(usable) > 0
@@ -196,7 +197,7 @@ class ScenarioAnalysis:
 
         print("情景定义完成:")
         for key, scenario in self.scenario_definitions.items():
-            print(f"\n情景{key}: {scenario['name']}")
+            print(f"\n{t('情景', 'Scenario')}{key}: {scenario['name']}")
             print(f"描述: {scenario['description']}")
             print(f"发生概率: {scenario['probability']:.0%}")
 
@@ -549,7 +550,7 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax1.plot(df['quarter'], df['growth_gap_mean'],
                      'o-', color=colors[scenario_id],
-                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f"{t('情景', 'Scenario')} {scenario_id}")
 
         ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         ax1.set_title(t('增长缺口预测对比', 'Growth-gap Forecast Comparison'), fontsize=12, fontweight='bold')
@@ -564,7 +565,7 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax2.plot(df['quarter'], df['maturity_rate_mean'],
                      's-', color=colors[scenario_id],
-                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f"{t('情景', 'Scenario')} {scenario_id}")
 
         ax2.set_title(t('存款到期率预测对比', 'Maturity-rate Forecast Comparison'), fontsize=12, fontweight='bold')
         ax2.set_ylabel(t('到期率', 'Maturity Rate'))
@@ -578,7 +579,7 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax3.plot(df['quarter'], df['high_rate_maturity_mean'],
                      '^-', color=colors[scenario_id],
-                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f"{t('情景', 'Scenario')} {scenario_id}")
 
         ax3.set_title(t('高息到期规模预测对比', 'High-rate Maturity Forecast Comparison'), fontsize=12, fontweight='bold')
         ax3.set_ylabel(t('高息到期规模', 'High-rate Maturity Size'))
@@ -593,7 +594,7 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax4.plot(df['quarter'], df['risk_score'],
                      '*-', color=colors[scenario_id],
-                     linewidth=2.2, markersize=9, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=9, label=f"{t('情景', 'Scenario')} {scenario_id}")
 
         ax4.set_title(t('存款搬家风险评分对比', 'Relocation Risk-score Comparison'), fontsize=12, fontweight='bold')
         ax4.set_ylabel(t('风险评分 (0-10)', 'Risk Score (0-10)'))
@@ -705,9 +706,51 @@ class ScenarioAnalysis:
 
         report_text = "\n".join(report_lines)
 
+        # Word兼容HTML（.doc可直接打开）
+        summary_rows = []
+        for scenario_id, assessment in self.risk_assessments.items():
+            summary_rows.append(
+                f"<tr><td>{scenario_id}</td><td>{assessment['scenario_name']}</td>"
+                f"<td>{assessment['high_risk_probability']:.1%}</td><td>{assessment['red_warnings']}</td>"
+                f"<td>{assessment['orange_warnings']}</td><td>{assessment['yellow_warnings']}</td>"
+                f"<td>{assessment['avg_risk_score']:.2f}</td></tr>"
+            )
+        report_doc = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'>
+<style>
+body {{ font-family: Arial, 'Microsoft YaHei', 'SimHei', sans-serif; line-height:1.65; margin:24px; }}
+h1,h2 {{ color:#1f3b5b; }}
+table {{ border-collapse: collapse; width:100%; margin:12px 0; }}
+th,td {{ border:1px solid #d0d7de; padding:8px; text-align:left; }}
+th {{ background:#f6f8fa; }}
+.kpi {{ background:#f0f7ff; border-left:4px solid #2f81f7; padding:10px; }}
+</style></head><body>
+<h1>居民存款流向情景分析报告</h1>
+<p>生成时间：{pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+<div class='kpi'>
+  <p><b>风险最高情景：</b>{highest_risk[1]['scenario_name']}（高风险概率 {highest_risk[1]['high_risk_probability']:.1%}）</p>
+  <p><b>风险最低情景：</b>{lowest_risk[1]['scenario_name']}（高风险概率 {lowest_risk[1]['high_risk_probability']:.1%}）</p>
+</div>
+<h2>情景风险总览</h2>
+<table>
+<tr><th>情景ID</th><th>情景名称</th><th>高风险概率</th><th>红色</th><th>橙色</th><th>黄色</th><th>平均风险评分</th></tr>
+{''.join(summary_rows)}
+</table>
+<h2>策略建议</h2>
+<ul>
+<li>高风险情景优先保障流动性与负债结构调整。</li>
+<li>重点监测增长缺口、到期率、高息到期规模是否出现共振上行。</li>
+<li>风险评分≥7启动高风险预案，4-7执行中风险管控。</li>
+</ul>
+</body></html>"""
+
         if output_path:
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(report_text)
+            if output_path.lower().endswith('.doc'):
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(report_doc)
+            else:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(report_text)
             print(f"报告已保存到: {output_path}")
 
         print(report_text)
@@ -845,8 +888,8 @@ class ScenarioAnalysis:
             # 4. 生成可视化
             self.generate_visualizations(save_path=os.path.join(output_dir, 'scenario_analysis.png'))
 
-            # 5. 生成报告
-            self.generate_report(output_path=os.path.join(output_dir, 'scenario_analysis_report.txt'))
+            # 5. 生成报告（Word可直接打开的.doc）
+            self.generate_report(output_path=os.path.join(output_dir, 'scenario_analysis_report.doc'))
 
             print("\n" + "=" * 60)
             print("情景分析完成!")

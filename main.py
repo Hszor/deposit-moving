@@ -29,6 +29,7 @@ def configure_matplotlib_for_chinese():
     available = {f.name for f in font_manager.fontManager.ttflist}
     usable = [f for f in candidates if f in available]
     plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
+    plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['axes.unicode_minus'] = False
     plt.style.use('seaborn-v0_8-whitegrid')
 
@@ -173,7 +174,7 @@ def run_scenario_analysis(historical_df):
 
     # 生成详细报告
     print("生成分析报告...")
-    scenario_analyzer.generate_report(output_path='results/scenario_analysis_report.txt')
+    scenario_analyzer.generate_report(output_path='results/scenario_analysis_report.doc')
 
     # 导出所有结果
     print("导出分析结果...")
@@ -217,7 +218,7 @@ def main():
     print("2. results/warning_timeline.png - 预警时间线")
     print("3. results/warning_signals.csv - 预警信号数据")
     print("4. results/scenario_analysis.png - 情景分析可视化")
-    print("5. results/scenario_analysis_report.txt - 情景分析报告")
+    print("5. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
     print("6. results/scenario_results/ - 情景分析详细结果")
 
     print("\n下一步建议:")
