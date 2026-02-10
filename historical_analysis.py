@@ -8,6 +8,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats
 
+
+# 中国2005-2025年常被讨论的居民存款“搬家”阶段（季度口径）
+# 注：用于“有监督反推”时的初始标签，实际项目可按机构口径调整
+KNOWN_RELOCATION_PERIODS_2005_2025 = [
+    ('2007Q2', '2008Q1'),  # 股市走强，资金分流至权益市场
+    ('2014Q4', '2015Q3'),  # 杠杆牛市阶段
+    ('2020Q3', '2021Q4'),  # 权益与基金市场热度上行
+    ('2024Q2', '2025Q1'),  # 利率下行与资产再配置阶段
+]
+
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -44,6 +54,111 @@ class DepositRelocationAnalyzer:
         self.df['maturity_rate'] = self.df['maturity_amount'] / self.df['deposit_balance']
 
         return self.df
+
+    @staticmethod
+    def _to_period(period_value):
+        """将输入统一转为季度Period对象"""
+        if isinstance(period_value, pd.Period):
+            return period_value.asfreq('Q')
+        return pd.Period(period_value, freq='Q')
+
+    def label_known_periods(self, known_periods=None, label_col='known_relocation_flag'):
+        """
+        根据已知历史阶段给数据打标签（有监督反推入口）
+
+        Parameters:
+        -----------
+        known_periods : list[tuple[str, str]], optional
+            [(start_quarter, end_quarter), ...]，例如 [('2007Q2', '2008Q1')]
+        label_col : str
+            输出标签列名
+        """
+        if known_periods is None:
+            known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
+
+        if 'date' not in self.df.columns:
+            raise ValueError("数据中缺少date列，无法对齐历史阶段")
+
+        quarter_series = pd.to_datetime(self.df['date']).dt.to_period('Q')
+        label = pd.Series(0, index=self.df.index, dtype=int)
+
+        for start_q, end_q in known_periods:
+            start_p = self._to_period(start_q)
+            end_p = self._to_period(end_q)
+            label = label | ((quarter_series >= start_p) & (quarter_series <= end_p)).astype(int)
+
+        self.df[label_col] = label.astype(int)
+        return self.df
+
+    def calibrate_thresholds_with_known_periods(self,
+                                                known_periods=None,
+                                                window_candidates=(2, 3, 4),
+                                                growth_gap_candidates=(0.1, 0.15, 0.2, 0.25, 0.3),
+                                                maturity_rate_candidates=(0.7, 0.75, 0.8, 0.85, 0.9),
+                                                tcmpi_candidates=(0.7, 0.75, 0.8, 0.85, 0.9),
+                                                label_col='known_relocation_flag'):
+        """
+        使用“已知存款搬家阶段”反推识别阈值（网格搜索）
+        目标：最大化与历史节点标签的一致性（F1分数）
+        """
+        self.label_known_periods(known_periods=known_periods, label_col=label_col)
+
+        # 避免累计覆盖，先保存原始数据
+        original_df = self.df.copy()
+
+        best_result = {
+            'f1': -1,
+            'precision': 0,
+            'recall': 0,
+            'accuracy': 0,
+            'window': None,
+            'threshold_config': None
+        }
+
+        for window in window_candidates:
+            for growth_gap_pct in growth_gap_candidates:
+                for maturity_rate_pct in maturity_rate_candidates:
+                    for tcmpi_pct in tcmpi_candidates:
+                        self.df = original_df.copy()
+                        threshold_config = {
+                            'growth_gap_pct': growth_gap_pct,
+                            'maturity_rate_pct': maturity_rate_pct,
+                            'tcmpi_pct': tcmpi_pct
+                        }
+                        self.identify_relocation_periods(window=window, threshold_config=threshold_config)
+
+                        y_true = self.df[label_col].values
+                        y_pred = self.df['relocation_flag'].values
+
+                        tp = int(((y_true == 1) & (y_pred == 1)).sum())
+                        fp = int(((y_true == 0) & (y_pred == 1)).sum())
+                        fn = int(((y_true == 1) & (y_pred == 0)).sum())
+                        tn = int(((y_true == 0) & (y_pred == 0)).sum())
+
+                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+                        accuracy = (tp + tn) / len(y_true) if len(y_true) > 0 else 0
+
+                        if f1 > best_result['f1']:
+                            best_result = {
+                                'f1': f1,
+                                'precision': precision,
+                                'recall': recall,
+                                'accuracy': accuracy,
+                                'window': window,
+                                'threshold_config': threshold_config
+                            }
+
+        # 用最优参数重新跑一遍并保留结果
+        self.df = original_df.copy()
+        self.identify_relocation_periods(
+            window=best_result['window'],
+            threshold_config=best_result['threshold_config']
+        )
+        self.df[label_col] = original_df[label_col]
+
+        return best_result
 
     def identify_relocation_periods(self, window=4, threshold_config=None):
         """

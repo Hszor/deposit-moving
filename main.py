@@ -11,7 +11,11 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # 导入自定义模块
-from historical_analysis import DepositRelocationAnalyzer, create_sample_data
+from historical_analysis import (
+    DepositRelocationAnalyzer,
+    create_sample_data,
+    KNOWN_RELOCATION_PERIODS_2005_2025,
+)
 from warning_system import EarlyWarningSystem
 from scenario_analysis import ScenarioAnalysis
 
@@ -46,7 +50,7 @@ def load_real_data(file_path=None):
 
     return df
 
-def run_historical_analysis(df):
+def run_historical_analysis(df, use_known_period_calibration=True):
     """运行历史回测分析"""
     print("\n" + "=" * 60)
     print("步骤1: 历史回测分析")
@@ -60,7 +64,23 @@ def run_historical_analysis(df):
 
     # 识别存款搬家阶段
     print("正在识别存款搬家阶段...")
-    analyzer.identify_relocation_periods(window=2)
+
+    if use_known_period_calibration:
+        print("使用2005-2025已知阶段反推最优阈值...")
+        calibration_result = analyzer.calibrate_thresholds_with_known_periods(
+            known_periods=KNOWN_RELOCATION_PERIODS_2005_2025,
+            window_candidates=(2, 3, 4),
+        )
+        print("阈值反推完成:")
+        print(
+            f"  最优窗口={calibration_result['window']}, "
+            f"F1={calibration_result['f1']:.3f}, "
+            f"精确率={calibration_result['precision']:.3f}, "
+            f"召回率={calibration_result['recall']:.3f}"
+        )
+        print(f"  最优阈值={calibration_result['threshold_config']}")
+    else:
+        analyzer.identify_relocation_periods(window=2)
 
     # 计算统计信息
     period_stats = analyzer.calculate_period_statistics()
@@ -161,7 +181,7 @@ def main():
     print(f"数据维度: {df.shape[0]}行 × {df.shape[1]}列")
 
     # 2. 运行历史回测分析
-    analyzer = run_historical_analysis(df)
+    analyzer = run_historical_analysis(df, use_known_period_calibration=True)
 
     # 3. 运行预警系统
     warning_system = run_warning_system(analyzer)
