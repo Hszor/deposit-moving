@@ -21,6 +21,14 @@ from scenario_analysis import ScenarioAnalysis
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+plt.style.use('seaborn-v0_8-whitegrid')
+
+
+def print_section(title):
+    """统一的分节输出样式，提升终端可读性"""
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
 
 def load_real_data(file_path=None):
     """
@@ -52,15 +60,19 @@ def load_real_data(file_path=None):
 
 def run_historical_analysis(df, use_known_period_calibration=True):
     """运行历史回测分析"""
-    print("\n" + "=" * 60)
-    print("步骤1: 历史回测分析")
-    print("=" * 60)
+    print_section("步骤1: 历史回测分析")
 
     # 创建分析器
     analyzer = DepositRelocationAnalyzer(df)
 
     # 计算核心指标
     analyzer.calculate_core_indicators()
+    print("核心指标统计快照:")
+    snapshot = analyzer.get_core_indicator_snapshot()
+    if hasattr(snapshot, 'to_string'):
+        print(snapshot.to_string())
+    else:
+        print(snapshot)
 
     # 识别存款搬家阶段
     print("正在识别存款搬家阶段...")
@@ -98,9 +110,7 @@ def run_historical_analysis(df, use_known_period_calibration=True):
 
 def run_warning_system(analyzer):
     """运行预警系统"""
-    print("\n" + "=" * 60)
-    print("步骤2: 预警系统分析")
-    print("=" * 60)
+    print_section("步骤2: 预警系统分析")
 
     # 创建预警系统
     warning_system = EarlyWarningSystem(analyzer=analyzer)
@@ -126,9 +136,7 @@ def run_warning_system(analyzer):
 
 def run_scenario_analysis(historical_df):
     """运行情景分析"""
-    print("\n" + "=" * 60)
-    print("步骤3: 情景分析")
-    print("=" * 60)
+    print_section("步骤3: 情景分析")
 
     # 创建情景分析器
     scenario_analyzer = ScenarioAnalysis(historical_data=historical_df)
@@ -161,9 +169,7 @@ def run_scenario_analysis(historical_df):
 
 def main():
     """主函数"""
-    print("居民存款流向分析系统")
-    print("版本: 1.0")
-    print("=" * 60)
+    print_section("居民存款流向分析系统 | 版本 1.1（可视化增强版）")
 
     # 创建结果目录
     import os
@@ -190,9 +196,7 @@ def main():
     scenario_analyzer = run_scenario_analysis(df)
 
     # 5. 生成最终报告
-    print("\n" + "=" * 60)
-    print("分析完成!")
-    print("=" * 60)
+    print_section("分析完成!")
 
     print("\n主要输出文件:")
     print("1. results/historical_timeline.png - 历史存款搬家时间线")

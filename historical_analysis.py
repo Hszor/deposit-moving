@@ -20,6 +20,7 @@ KNOWN_RELOCATION_PERIODS_2005_2025 = [
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+plt.style.use('seaborn-v0_8-whitegrid')
 
 class DepositRelocationAnalyzer:
     """
@@ -54,6 +55,17 @@ class DepositRelocationAnalyzer:
         self.df['maturity_rate'] = self.df['maturity_amount'] / self.df['deposit_balance']
 
         return self.df
+
+    def get_core_indicator_snapshot(self):
+        """核心指标快照，便于快速理解结果"""
+        required_cols = ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+        missing_cols = [c for c in required_cols if c not in self.df.columns]
+        if missing_cols:
+            return f"缺少核心指标列: {missing_cols}"
+
+        snapshot = self.df[required_cols].describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]).T
+        snapshot = snapshot[['mean', 'std', 'min', '10%', '25%', '50%', '75%', '90%', 'max']]
+        return snapshot.round(4)
 
     @staticmethod
     def _to_period(period_value):
@@ -287,68 +299,86 @@ class DepositRelocationAnalyzer:
             print("请先运行identify_relocation_periods方法")
             return
 
-        fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+        fig, axes = plt.subplots(3, 1, figsize=(16, 11), sharex=True)
 
         # 1. 增长缺口
         ax1 = axes[0]
-        ax1.plot(self.df['date'], self.df['growth_gap'], 'b-', linewidth=1.5, label='增速偏离度')
+        ax1.plot(self.df['date'], self.df['growth_gap'], color='#1f77b4', linewidth=2.0, label='增速偏离度')
 
         # 绘制阈值线（如果可用）
         if 'growth_gap' in self.df.columns and len(self.df) > 0:
             growth_gap_20pct = self.df['growth_gap'].quantile(0.2)
-            ax1.axhline(y=growth_gap_20pct, color='r',
-                       linestyle='--', alpha=0.5, label='20%分位阈值')
+            ax1.axhline(y=growth_gap_20pct, color='#d62728',
+                       linestyle='--', alpha=0.8, linewidth=1.5, label='20%分位阈值')
 
         # 标记存款搬家阶段
         ax1.fill_between(self.df['date'], ax1.get_ylim()[0], ax1.get_ylim()[1],
                          where=self.df['relocation_flag']==1,
-                         color='red', alpha=0.1, label='存款搬家阶段')
+                         color='#d62728', alpha=0.12, label='识别为存款搬家阶段')
         ax1.set_ylabel('增速偏离度 (%)')
         ax1.legend(loc='upper right')
-        ax1.grid(True, alpha=0.3)
+        ax1.grid(True, alpha=0.3, linestyle=':')
 
         # 2. 存款到期率
         ax2 = axes[1]
         if 'maturity_rate' in self.df.columns:
-            ax2.plot(self.df['date'], self.df['maturity_rate'], 'g-',
-                    linewidth=1.5, label='存款到期率')
+            ax2.plot(self.df['date'], self.df['maturity_rate'], color='#2ca02c',
+                    linewidth=2.0, label='存款到期率')
 
             # 绘制阈值线
             maturity_rate_80pct = self.df['maturity_rate'].quantile(0.8)
-            ax2.axhline(y=maturity_rate_80pct, color='r',
-                       linestyle='--', alpha=0.5, label='80%分位阈值')
+            ax2.axhline(y=maturity_rate_80pct, color='#d62728',
+                       linestyle='--', alpha=0.8, linewidth=1.5, label='80%分位阈值')
 
             ax2.fill_between(self.df['date'], ax2.get_ylim()[0], ax2.get_ylim()[1],
                              where=self.df['relocation_flag']==1,
-                             color='red', alpha=0.1)
+                             color='#d62728', alpha=0.12)
         ax2.set_ylabel('存款到期率')
         ax2.legend(loc='upper right')
-        ax2.grid(True, alpha=0.3)
+        ax2.grid(True, alpha=0.3, linestyle=':')
 
         # 3. 高息到期存款规模
         ax3 = axes[2]
         if 'high_rate_maturity' in self.df.columns:
-            ax3.plot(self.df['date'], self.df['high_rate_maturity'], 'orange',
-                    linewidth=1.5, label='高息到期规模')
+            ax3.plot(self.df['date'], self.df['high_rate_maturity'], color='#ff7f0e',
+                    linewidth=2.0, label='高息到期规模')
 
             # 绘制阈值线
             tcmpi_80pct = self.df['high_rate_maturity'].quantile(0.8)
-            ax3.axhline(y=tcmpi_80pct, color='r',
-                       linestyle='--', alpha=0.5, label='80%分位阈值')
+            ax3.axhline(y=tcmpi_80pct, color='#d62728',
+                       linestyle='--', alpha=0.8, linewidth=1.5, label='80%分位阈值')
 
             ax3.fill_between(self.df['date'], ax3.get_ylim()[0], ax3.get_ylim()[1],
                              where=self.df['relocation_flag']==1,
-                             color='red', alpha=0.1)
+                             color='#d62728', alpha=0.12)
         ax3.set_ylabel('高息到期规模')
         ax3.set_xlabel('日期')
         ax3.legend(loc='upper right')
-        ax3.grid(True, alpha=0.3)
+        ax3.grid(True, alpha=0.3, linestyle=':')
 
-        plt.suptitle('中国居民存款"搬家"阶段识别（2005-2025）', fontsize=14, y=1.02)
+        # 标注已识别阶段（更易读）
+        if self.relocation_periods:
+            for i, period in enumerate(self.relocation_periods, 1):
+                mid_date = period['start_date'] + (period['end_date'] - period['start_date']) / 2
+                start_q = pd.Period(period['start_date'], freq='Q')
+                end_q = pd.Period(period['end_date'], freq='Q')
+                ax1.annotate(
+                    f"阶段{i}\n{start_q.year}Q{start_q.quarter}~{end_q.year}Q{end_q.quarter}",
+                    xy=(mid_date, ax1.get_ylim()[1] * 0.88),
+                    xytext=(0, 0),
+                    textcoords='offset points',
+                    ha='center',
+                    va='top',
+                    fontsize=8,
+                    color='#8b0000',
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='#d62728', alpha=0.7)
+                )
+
+        plt.suptitle('中国居民存款“搬家”阶段识别（2005-2025）\n三指标共振 + 持续性窗口', fontsize=15, y=1.02)
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=320, bbox_inches='tight')
         plt.show()
 
     def get_relocation_summary(self):

@@ -14,6 +14,7 @@ warnings.filterwarnings('ignore')
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+plt.style.use('seaborn-v0_8-whitegrid')
 
 
 class ScenarioAnalysis:
@@ -492,7 +493,7 @@ class ScenarioAnalysis:
         print("生成可视化图表...")
 
         # 创建图表
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig, axes = plt.subplots(2, 2, figsize=(16, 11))
 
         scenarios = list(self.scenario_forecasts.keys())
         colors = {'A': '#2E8B57', 'B': '#DC143C', 'C': '#1E90FF'}
@@ -503,13 +504,13 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax1.plot(df['quarter'], df['growth_gap_mean'],
                      'o-', color=colors[scenario_id],
-                     linewidth=2, markersize=6, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
         ax1.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
         ax1.set_title('增长缺口预测对比', fontsize=12, fontweight='bold')
         ax1.set_ylabel('增速偏离度 (%)')
         ax1.legend(loc='best')
-        ax1.grid(True, alpha=0.3)
+        ax1.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
 
         # 2. 存款到期率对比
@@ -518,12 +519,12 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax2.plot(df['quarter'], df['maturity_rate_mean'],
                      's-', color=colors[scenario_id],
-                     linewidth=2, markersize=6, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
         ax2.set_title('存款到期率预测对比', fontsize=12, fontweight='bold')
         ax2.set_ylabel('到期率')
         ax2.legend(loc='best')
-        ax2.grid(True, alpha=0.3)
+        ax2.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
 
         # 3. 高息到期规模对比
@@ -532,13 +533,13 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax3.plot(df['quarter'], df['high_rate_maturity_mean'],
                      '^-', color=colors[scenario_id],
-                     linewidth=2, markersize=6, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=6.5, label=f'情景{scenario_id}')
 
         ax3.set_title('高息到期规模预测对比', fontsize=12, fontweight='bold')
         ax3.set_ylabel('高息到期规模')
         ax3.set_xlabel('季度')
         ax3.legend(loc='best')
-        ax3.grid(True, alpha=0.3)
+        ax3.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
 
         # 4. 风险评分对比
@@ -547,20 +548,22 @@ class ScenarioAnalysis:
             df = self.scenario_forecasts[scenario_id]['forecast_df']
             ax4.plot(df['quarter'], df['risk_score'],
                      '*-', color=colors[scenario_id],
-                     linewidth=2, markersize=8, label=f'情景{scenario_id}')
+                     linewidth=2.2, markersize=9, label=f'情景{scenario_id}')
 
         ax4.set_title('存款搬家风险评分对比', fontsize=12, fontweight='bold')
         ax4.set_ylabel('风险评分 (0-10)')
         ax4.set_ylim(0, 10)
+        ax4.axhspan(7, 10, color='#d62728', alpha=0.08, label='高风险区(7-10)')
+        ax4.axhspan(4, 7, color='#ff7f0e', alpha=0.08, label='中风险区(4-7)')
         ax4.legend(loc='best')
-        ax4.grid(True, alpha=0.3)
+        ax4.grid(True, alpha=0.3, linestyle=':')
         plt.setp(ax4.xaxis.get_majorticklabels(), rotation=45)
 
-        plt.suptitle('2026-2027年居民存款流向情景分析', fontsize=14, fontweight='bold', y=1.02)
+        plt.suptitle('2026-2027年居民存款流向情景分析\n四图联动展示关键指标与风险评分', fontsize=15, fontweight='bold', y=1.02)
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=320, bbox_inches='tight')
             print(f"图表已保存到: {save_path}")
 
         plt.show()
@@ -642,6 +645,14 @@ class ScenarioAnalysis:
         report_lines.append("   - 制定差异化存款定价策略")
         report_lines.append("   - 优化存款产品期限结构")
         report_lines.append("   - 加强与客户的沟通和预期管理")
+
+        # 5. 图表解读提示（提升可读性）
+        report_lines.append("\n\n五、图表解读提示")
+        report_lines.append("-" * 40)
+        report_lines.append("1. 左上（增长缺口）：数值越低通常意味着存款相对吸引力下降")
+        report_lines.append("2. 右上（到期率）：持续抬升时，需关注集中兑付与再配置压力")
+        report_lines.append("3. 左下（高息到期规模）：规模越大，存款分流冲击可能越明显")
+        report_lines.append("4. 右下（风险评分）：7分以上为高风险区，建议预先启动应对预案")
 
         report_text = "\n".join(report_lines)
 

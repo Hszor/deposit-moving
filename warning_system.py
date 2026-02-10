@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
+plt.style.use('seaborn-v0_8-whitegrid')
 
 class EarlyWarningSystem:
     """
@@ -174,22 +175,37 @@ class EarlyWarningSystem:
 
         return signals_df
 
+    def get_warning_level_table(self):
+        """返回更易读的预警级别分布表"""
+        if self.warning_signals is None:
+            return None
+
+        level_name = {0: '无预警', 1: '黄色', 2: '橙色', 3: '红色'}
+        summary = self.warning_signals['warning_level'].value_counts().sort_index()
+        df = pd.DataFrame({
+            'warning_level': summary.index,
+            'label': [level_name.get(i, '未知') for i in summary.index],
+            'count': summary.values,
+            'percentage': (summary.values / len(self.warning_signals)).round(4)
+        })
+        return df
+
     def plot_warning_timeline(self, save_path=None):
         """绘制预警时间线"""
         if self.warning_signals is None:
             print("请先生成预警信号")
             return
 
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(16, 7))
 
         # 颜色映射
-        colors = {0: 'green', 1: 'yellow', 2: 'orange', 3: 'red'}
+        colors = {0: '#2ca02c', 1: '#f1c40f', 2: '#ff7f0e', 3: '#d62728'}
 
         # 绘制预警级别
         for level in [3, 2, 1]:
             mask = self.warning_signals['warning_level'] == level
             if mask.any():
-                ax.fill_between(self.warning_signals['date'], level-0.4, level+0.4,
+                ax.fill_between(self.warning_signals['date'], level-0.35, level+0.35,
                                where=mask, color=colors[level], alpha=0.6,
                                label=f'{self._get_warning_label(level)}预警')
 
@@ -197,7 +213,7 @@ class EarlyWarningSystem:
         if 'growth_gap' in self.df.columns:
             ax2 = ax.twinx()
             ax2.plot(self.df['date'], self.df['growth_gap'],
-                    'b-', linewidth=0.8, alpha=0.5, label='增速偏离度')
+                    color='#1f77b4', linewidth=1.5, alpha=0.65, label='增速偏离度')
             ax2.set_ylabel('增速偏离度 (%)', color='b')
             ax2.tick_params(axis='y', labelcolor='b')
             ax2.legend(loc='upper left')
@@ -206,14 +222,23 @@ class EarlyWarningSystem:
         ax.set_yticklabels(['无预警', '黄色', '橙色', '红色'])
         ax.set_ylabel('预警级别')
         ax.set_xlabel('日期')
-        ax.set_title('存款到期压力预警时间线（2005-2025）', fontsize=12, fontweight='bold')
+        ax.set_title('存款到期压力预警时间线（2005-2025）\n颜色越深风险越高', fontsize=13, fontweight='bold')
         ax.legend(loc='upper right')
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.3, linestyle=':')
+
+        # 标记红色预警点
+        red_mask = self.warning_signals['warning_level'] == 3
+        if red_mask.any():
+            ax.scatter(
+                self.warning_signals.loc[red_mask, 'date'],
+                self.warning_signals.loc[red_mask, 'warning_level'],
+                color='#8b0000', s=36, zorder=5, label='红色预警时点'
+            )
 
         plt.tight_layout()
 
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.savefig(save_path, dpi=320, bbox_inches='tight')
         plt.show()
 
     def _get_warning_label(self, level):
@@ -252,6 +277,11 @@ class EarlyWarningSystem:
         print(f"黄色预警: {stats['yellow_warnings']}个")
         print(f"无预警: {stats['no_warnings']}个")
         print(f"高风险时期占比: {stats['high_risk_percentage']:.1%}")
+
+        level_table = self.get_warning_level_table()
+        if level_table is not None:
+            print("\n预警级别分布:")
+            print(level_table.to_string(index=False))
 
         # 输出具体预警时期
         if stats['red_warnings'] > 0:
