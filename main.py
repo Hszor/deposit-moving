@@ -56,11 +56,18 @@ warnings.filterwarnings('ignore')
 
 # 导入自定义模块
 try:
-    from feature_engine import WindowFeatureEngine, EventProfileBuilder, SimilarityScorer
+    from feature_engine import WindowFeatureEngine, EventProfileBuilder
     print("✅ 成功导入特征工程模块")
 except ImportError as e:
     print(f"❌ 无法导入特征工程模块: {e}")
     sys.exit(1)
+
+
+try:
+    from semi_supervised_detector import SemiSupervisedDetector
+    print("✅ 成功导入半监督检测模块")
+except ImportError as e:
+    print(f"❌ 无法导入半监督检测模块: {e}")
 
 try:
     from validation import CrossWindowValidator
@@ -220,12 +227,12 @@ def run_feature_engineering(event_window_data, output_dir='results'):
 
     return feature_engine, event_builder
 
-def run_model_validation(feature_engine, event_window_data, output_dir='results'):
+def run_model_validation(feature_engine, event_window_data, normal_window_data=None, output_dir='results'):
     """
     运行模型验证（Leave-One-Window-Out）
     """
     print("\n" + "=" * 60)
-    print("🔍 步骤2: 模型验证 (Leave-One-Window-Out)")
+    print("🔍 步骤2: 模型验证（留一窗口法）")
     print("=" * 60)
 
     # 创建验证目录
@@ -234,9 +241,10 @@ def run_model_validation(feature_engine, event_window_data, output_dir='results'
         os.makedirs(validation_dir)
 
     # 运行验证
-    validator = CrossWindowValidator(feature_engine, SimilarityScorer)
+    validator = CrossWindowValidator(feature_engine, SemiSupervisedDetector)
     validation_results = validator.leave_one_window_out(
-        event_window_data, list(event_window_data.keys())
+        event_window_data,
+        normal_window_data
     )
 
     # 计算验证指标
@@ -257,12 +265,13 @@ def run_model_validation(feature_engine, event_window_data, output_dir='results'
     print(f"   精确率: {metrics.get('precision', 0):.3f}")
     print(f"   召回率: {metrics.get('recall', 0):.3f}")
     print(f"   F1分数: {metrics.get('f1_score', 0):.3f}")
-    print(f"   AUC: {metrics.get('auc', 0):.3f}")
+    print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
+    print(f"   PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
     print(f"   正确识别率: {metrics.get('correct_rate', 0):.1%}")
 
     return validator, metrics
 
-def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir='results'):
+def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, output_dir='results'):
     """
     运行2026年风险评估
     """
@@ -275,11 +284,8 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     if not os.path.exists(assessment_dir):
         os.makedirs(assessment_dir)
 
-    # 创建相似度评分器
-    scorer = SimilarityScorer(event_builder.profile)
-
-    # 创建风险评估器
-    risk_assessor = StructuralRiskAssessor(event_builder.profile, scorer)
+    # 创建风险评估器（半监督双分布）
+    risk_assessor = StructuralRiskAssessor(detector)
 
     # 提取2026年特征
     print("\n📊 提取2026年预测特征...")
@@ -289,16 +295,14 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     cross_features = feature_engine.calculate_cross_features(forecast_2026)
     forecast_features_dict.update(cross_features)
 
-    # 转换为特征向量（与事件特征顺序一致）
-    feature_names = event_builder.feature_names
+    # 转换为特征向量（与训练特征顺序一致）
     forecast_vector = [forecast_features_dict.get(name, 0) for name in feature_names]
 
     # 执行风险评估
     print("🔍 执行结构风险评估...")
     assessment = risk_assessor.generate_risk_assessment(
         forecast_vector,
-        feature_names,
-        historical_features=event_builder.feature_df
+        feature_names
     )
 
     # 绘制风险分解图
@@ -314,13 +318,132 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     print(f"\n📊 2026年风险评估结果:")
     print(f"   风险指数: {assessment['risk_index']:.1f}/100")
     print(f"   风险等级: {assessment['risk_level']}")
-    print(f"   结构分数: {assessment['score_breakdown']['structure_score']:.2f}")
+    print(f"   似然比分数: {assessment['score_breakdown']['lr_score']:.3f}")
 
     # 解释结果
     print(f"\n💡 结果解释:")
     print(f"   {assessment['risk_description']}")
 
     return risk_assessor, assessment
+
+
+
+def generate_scenario_forecasts(baseline_forecast):
+    """基于基准预测构造三种代表性情景"""
+    scenarios = {}
+
+    # 1) 基准情景：经济温和修复
+    scenarios['基准情景（经济温和修复）'] = {
+        k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()
+    }
+
+    # 2) 强触发情景：集中到期 + 市场分流共振
+    strong = {k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()}
+    if 'growth_gap' in strong:
+        strong['growth_gap'] = strong['growth_gap'] - 0.6 - 0.15 * np.arange(len(strong['growth_gap']))
+    if 'maturity_rate' in strong:
+        strong['maturity_rate'] = strong['maturity_rate'] * 1.35
+    if 'high_rate_ratio' in strong:
+        strong['high_rate_ratio'] = strong['high_rate_ratio'] * 1.40
+    scenarios['强触发情景（集中到期与市场分流共振）'] = strong
+
+    # 3) 弱分流情景：避险偏好上升，资金回流存款
+    weak = {k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()}
+    if 'growth_gap' in weak:
+        weak['growth_gap'] = weak['growth_gap'] + 0.45
+    if 'maturity_rate' in weak:
+        weak['maturity_rate'] = weak['maturity_rate'] * 0.85
+    if 'high_rate_ratio' in weak:
+        weak['high_rate_ratio'] = weak['high_rate_ratio'] * 0.85
+    scenarios['弱分流情景（避险偏好上升）'] = weak
+
+    return scenarios
+
+
+def run_scenario_analysis(feature_engine, detector, feature_names, baseline_forecast, output_dir='results'):
+    """三情景分析：输出各情景2026年存款搬家风险"""
+    print("\n" + "=" * 60)
+    print("🧭 步骤4: 三情景风险分析")
+    print("=" * 60)
+
+    scenario_dir = os.path.join(output_dir, 'scenario_analysis')
+    if not os.path.exists(scenario_dir):
+        os.makedirs(scenario_dir)
+
+    scenarios = generate_scenario_forecasts(baseline_forecast)
+    scenario_results = {}
+
+    for scenario_name, forecast_data in scenarios.items():
+        print(f"\n🔎 评估情景: {scenario_name}")
+        scenario_subdir = os.path.join(
+            scenario_dir,
+            scenario_name.replace('（', '_').replace('）', '').replace('与', '_').replace(' ', '_')
+        )
+        _, assessment = run_2026_assessment(
+            feature_engine,
+            detector,
+            feature_names,
+            forecast_data,
+            output_dir=scenario_subdir
+        )
+        scenario_results[scenario_name] = {
+            'forecast': forecast_data,
+            'assessment': assessment,
+            'possibility': assessment['risk_index'] / 100.0
+        }
+
+    # 绘制情景对比图
+    try:
+        import matplotlib.pyplot as plt
+
+        names = list(scenario_results.keys())
+        risk_values = [scenario_results[n]['assessment']['risk_index'] for n in names]
+        colors = ['#3498DB', '#E74C3C', '#2ECC71']
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.bar(range(len(names)), risk_values, color=colors, alpha=0.85)
+        ax.axhline(70, color='red', linestyle='--', alpha=0.6, label='高风险阈值')
+        ax.axhline(50, color='orange', linestyle='--', alpha=0.6, label='中风险阈值')
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=12, ha='right')
+        ax.set_ylabel('风险指数')
+        ax.set_title('2026年三情景下存款搬家风险对比')
+        ax.grid(True, axis='y', alpha=0.3)
+        ax.legend(loc='upper right')
+
+        for bar, value in zip(bars, risk_values):
+            ax.text(bar.get_x() + bar.get_width() / 2, value + 1, f'{value:.1f}',
+                    ha='center', va='bottom', fontsize=10)
+
+        plt.tight_layout()
+        scenario_plot = os.path.join(scenario_dir, 'scenario_risk_comparison.png')
+        plt.savefig(scenario_plot, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"📈 情景对比图保存到: {scenario_plot}")
+    except Exception as e:
+        print(f"⚠️ 情景对比图绘制失败: {e}")
+
+    # 生成情景分析文本
+    lines = [
+        '=' * 80,
+        '2026年三情景存款搬家风险分析',
+        '=' * 80,
+    ]
+    for name in scenarios.keys():
+        ass = scenario_results[name]['assessment']
+        lines.append(f"\n{name}")
+        lines.append('-' * 50)
+        lines.append(f"风险指数: {ass['risk_index']:.1f}/100")
+        lines.append(f"发生可能性(近似概率): {ass['risk_index']:.1f}%")
+        lines.append(f"风险等级: {ass['risk_level']}")
+        lines.append(f"解释: {ass['risk_description']}")
+
+    txt_path = os.path.join(scenario_dir, 'scenario_analysis_report.txt')
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    print(f"📄 情景分析报告保存到: {txt_path}")
+
+    return scenario_results
 
 def generate_2026_forecast(historical_df, n_quarters=4):
     """
@@ -335,7 +458,7 @@ def generate_2026_forecast(historical_df, n_quarters=4):
     last_date = historical_df['date'].max()
 
     # 使用'QE'（季度末）而不是'Q'
-    quarters_2026 = pd.period_range('2026Q1', periods=n_quarters, freq='Q')
+    quarters_2026 = pd.period_range('2026Q1', periods=n_quarters, freq='Q-DEC')
 
     # 简化预测：基于最近趋势外推，添加随机性
     forecast_data = {}
@@ -681,9 +804,25 @@ def main(data_file=None, output_dir='results'):
             event_window_data, output_dir
         )
 
-        # 4. 模型验证
+        # 4. 准备正常窗口（负样本）
+        normal_window_data = extract_window_data(historical_df, KNOWN_NORMAL_WINDOWS)
+        if not normal_window_data:
+            print("❌ 无法提取正常窗口数据，程序终止")
+            return False
+
+        # 5. 训练半监督检测器（事件分布 vs 正常分布）
+        event_feature_df = EventProfileBuilder(feature_engine).fit(event_window_data)
+        normal_feature_df = EventProfileBuilder(feature_engine).fit(normal_window_data)
+        feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
+        event_matrix = event_feature_df.reindex(columns=feature_names, fill_value=0).values
+        normal_matrix = normal_feature_df.reindex(columns=feature_names, fill_value=0).values
+
+        detector = SemiSupervisedDetector(robust=True, regularization=1e-4, lr_scale=1.0)
+        detector.fit(event_matrix, normal_matrix, feature_names=feature_names)
+
+        # 6. 模型验证（基于LR分类能力）
         validator, metrics = run_model_validation(
-            feature_engine, event_window_data, output_dir
+            feature_engine, event_window_data, normal_window_data, output_dir
         )
 
         # 检查模型稳健性
@@ -693,18 +832,23 @@ def main(data_file=None, output_dir='results'):
         else:
             print(f"\n✅ 模型稳健性良好 (正确识别率: {metrics['correct_rate']:.1%})")
 
-        # 5. 生成2026年预测数据
+        # 7. 生成2026年预测数据（基准情景）
         forecast_2026 = generate_2026_forecast(historical_df, n_quarters=4)
 
-        # 6. 2026年风险评估
+        # 8. 基准情景风险评估
         risk_assessor, assessment = run_2026_assessment(
-            feature_engine, event_builder, forecast_2026, output_dir
+            feature_engine, detector, feature_names, forecast_2026, output_dir
         )
 
-        # 7. 创建高级可视化
+        # 9. 三情景分析
+        scenario_results = run_scenario_analysis(
+            feature_engine, detector, feature_names, forecast_2026, output_dir
+        )
+
+        # 10. 创建高级可视化
         create_advanced_visualization(historical_df, assessment, forecast_2026, output_dir)
 
-        # 8. 生成最终综合报告
+        # 11. 生成最终综合报告
         print("\n" + "=" * 60)
         print("📑 步骤6: 生成最终综合报告")
         print("=" * 60)
@@ -724,8 +868,10 @@ def main(data_file=None, output_dir='results'):
         report_lines.append("-" * 40)
         report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型")
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
-        report_lines.append(f"特征维度: {len(event_builder.feature_names)}维")
-        report_lines.append(f"模型稳健性: {metrics.get('correct_rate', 0):.1%}")
+        report_lines.append(f"特征维度: {len(feature_names)}维")
+        report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
+        report_lines.append(f"ROC曲线下面积: {metrics.get('auc', 0):.3f}")
+        report_lines.append(f"PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
 
         report_lines.append(f"\n🎯 2026年风险评估")
         report_lines.append("-" * 40)
@@ -738,9 +884,9 @@ def main(data_file=None, output_dir='results'):
         report_lines.append("-" * 40)
         if assessment:
             breakdown = assessment['score_breakdown']
-            report_lines.append(f"结构特征分数: {breakdown['structure_score']:.2f}")
-            report_lines.append(f"水平特征分数: {breakdown['level_score']:.2f}")
-            report_lines.append(f"形态特征分数: {breakdown['shape_score']:.2f}")
+            report_lines.append(f"事件分布对数似然: {breakdown['log_event']:.3f}")
+            report_lines.append(f"正常分布对数似然: {breakdown['log_normal']:.3f}")
+            report_lines.append(f"似然比分数: {breakdown['lr_score']:.3f}")
 
         report_lines.append(f"\n🎯 关键风险特征 (Top 5)")
         report_lines.append("-" * 40)
@@ -784,6 +930,16 @@ def main(data_file=None, output_dir='results'):
                 report_lines.append("   3. 完善风险管理流程和体系")
                 report_lines.append("   4. 加强团队培训和能力建设")
 
+        report_lines.append(f"\n🧭 三情景分析结论")
+        report_lines.append("-" * 40)
+        if scenario_results:
+            for s_name, s_result in scenario_results.items():
+                s_ass = s_result['assessment']
+                report_lines.append(
+                    f"{s_name}: 风险指数={s_ass['risk_index']:.1f}, "
+                    f"可能性≈{s_ass['risk_index']:.1f}%, 等级={s_ass['risk_level']}"
+                )
+
         report_lines.append(f"\n📁 输出文件清单")
         report_lines.append("-" * 40)
         report_lines.append(f"1. {output_dir}/feature_engineering/ - 特征工程结果")
@@ -805,14 +961,15 @@ def main(data_file=None, output_dir='results'):
         print("=" * 80)
 
         print(f"\n📊 核心结果:")
-        print(f"   模型稳健性: {metrics.get('correct_rate', 0):.1%}")
+        print(f"   模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
+        print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
         if assessment:
             print(f"   2026年风险指数: {assessment['risk_index']:.1f}/100")
             print(f"   风险等级: {assessment['risk_level']}")
 
         print(f"\n💡 系统特点:")
         print(f"   • 基于结构特征而非简单规则")
-        print(f"   • 三层评分体系（水平/结构/形态）")
+        print(f"   • 双分布似然比评分体系（事件/正常）")
         print(f"   • 稳健的模型验证（留一窗口法）")
         print(f"   • 可解释的风险贡献分析")
         print(f"   • 高级可视化展示")

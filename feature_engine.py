@@ -124,7 +124,9 @@ class WindowFeatureEngine:
         # 最大回撤
         if len(series) >= 2:
             cummax = np.maximum.accumulate(series)
-            drawdown = (series - cummax) / cummax
+            safe_cummax = np.where(np.abs(cummax) < 1e-10, np.nan, cummax)
+            drawdown = (series - safe_cummax) / safe_cummax
+            drawdown = np.nan_to_num(drawdown, nan=0.0, posinf=0.0, neginf=0.0)
             features['max_drawdown'] = np.min(drawdown) if len(drawdown) > 0 else 0
 
         # 上涨天数占比
@@ -135,8 +137,9 @@ class WindowFeatureEngine:
         if len(series) >= 5:
             rolling_std = pd.Series(series).rolling(3, min_periods=2).std().dropna()
             if len(rolling_std) >= 2:
-                features['vol_clustering'] = np.corrcoef(rolling_std.values[:-1],
-                                                         rolling_std.values[1:])[0, 1]
+                vol_corr = np.corrcoef(rolling_std.values[:-1],
+                                       rolling_std.values[1:])[0, 1]
+                features['vol_clustering'] = 0 if np.isnan(vol_corr) else vol_corr
             else:
                 features['vol_clustering'] = 0
 
@@ -268,7 +271,7 @@ class EventProfileBuilder:
                 robust_cov = MinCovDet().fit(X)
                 self.profile['cov_matrix'] = robust_cov.covariance_
                 self.profile['precision_matrix'] = robust_cov.precision_
-        except:
+        except (ValueError, np.linalg.LinAlgError):
             # 如果稳健估计失败，使用样本协方差
             if len(self.event_features) > 1:
                 self.profile['cov_matrix'] = self.feature_df.cov().values
