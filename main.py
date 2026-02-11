@@ -394,22 +394,37 @@ def build_recent_feature_matrix(historical_df, feature_engine, feature_names, wi
 
 
 def select_stable_feature_subset(event_feature_df, normal_feature_df, max_features=30):
-    """从高维特征中筛选稳定且有区分度的子集，避免小样本高维过拟合。"""
+    """基于业务先验筛选特征：先白名单，再按方差补齐。"""
     feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
-    event_aligned = event_feature_df.reindex(columns=feature_names, fill_value=0)
-    normal_aligned = normal_feature_df.reindex(columns=feature_names, fill_value=0)
 
+    # 删除小样本不稳定高阶特征
+    banned_keywords = ['kurtosis', 'skewness', 'autocorr_2', 'time_to_peak']
+    candidates = [f for f in feature_names if not any(k in f for k in banned_keywords)]
+
+    # 业务优先核心特征（如果存在则优先保留）
+    business_priority = [
+        'growth_gap_structure_slope',
+        'maturity_rate_structure_peak_value',
+        'high_rate_ratio_level_max',
+        'lead_corr_growth_gap_maturity_rate',
+        'growth_gap_shape_vol_clustering',
+    ]
+    selected = [f for f in business_priority if f in candidates]
+
+    event_aligned = event_feature_df.reindex(columns=candidates, fill_value=0)
+    normal_aligned = normal_feature_df.reindex(columns=candidates, fill_value=0)
     combined = pd.concat([event_aligned, normal_aligned], axis=0)
+
     variances = combined.var(axis=0).replace([np.inf, -np.inf], 0).fillna(0)
+    valid = variances[variances > 1e-8].sort_values(ascending=False)
 
-    # 过滤近常数特征
-    valid = variances[variances > 1e-8]
-    if valid.empty:
-        selected = feature_names[:max_features]
-    else:
-        selected = valid.sort_values(ascending=False).head(max_features).index.tolist()
+    for f in valid.index.tolist():
+        if f not in selected:
+            selected.append(f)
+        if len(selected) >= max_features:
+            break
 
-    return selected
+    return selected[:max_features]
 
 
 def monte_carlo_scenario_assessment(feature_engine, detector, feature_names,
@@ -983,7 +998,7 @@ def main(data_file=None, output_dir='results'):
         event_matrix = event_feature_df.reindex(columns=feature_names, fill_value=0).values
         normal_matrix = normal_feature_df.reindex(columns=feature_names, fill_value=0).values
 
-        detector = SemiSupervisedDetector(robust=True, regularization=1e-4, lr_scale=1.0)
+        detector = SemiSupervisedDetector(robust=True, regularization=1e-4, lr_scale=1.0, covariance_type='auto')
         detector.fit(event_matrix, normal_matrix, feature_names=feature_names)
 
         # 6. 模型验证（基于LR分类能力）
@@ -1032,10 +1047,10 @@ def main(data_file=None, output_dir='results'):
 
         report_lines.append(f"\n📋 执行摘要")
         report_lines.append("-" * 40)
-        report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型（温度缩放+特征压缩）")
+        report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型（标准化+对角协方差+特征压缩）")
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
         report_lines.append(f"特征维度: {len(feature_names)}维")
-        report_lines.append(f"分数中心: {detector.lr_center:.3f}, 温度: {detector.lr_temperature:.3f}")
+        report_lines.append(f"风险映射: 基于训练似然比分位数（0-100）")
         report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
         report_lines.append(f"ROC曲线下面积: {metrics.get('auc', 0):.3f}")
         report_lines.append(f"PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
