@@ -620,6 +620,94 @@ class ScenarioAnalysis:
 
         return fig
 
+    def generate_risk_dashboard(self, save_path=None):
+        """生成更聚焦决策的风险看板图（新增）"""
+        if not self.scenario_forecasts or not self.risk_assessments:
+            print("请先生成预测并完成风险评估!")
+            return
+
+        scenarios = list(self.scenario_forecasts.keys())
+        names = [self.risk_assessments[s]['scenario_name'] for s in scenarios]
+        high_risk_probs = [self.risk_assessments[s]['high_risk_probability'] for s in scenarios]
+        avg_scores = [self.risk_assessments[s]['avg_risk_score'] for s in scenarios]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+
+        # 左图：高风险概率条形图
+        ax1 = axes[0]
+        bars = ax1.bar(names, high_risk_probs, color=['#2E8B57', '#DC143C', '#1E90FF'], alpha=0.85)
+        ax1.set_title(t('情景高风险概率对比', 'High-risk Probability by Scenario'), fontweight='bold')
+        ax1.set_ylabel(t('高风险概率', 'High-risk Probability'))
+        ax1.set_ylim(0, 1.0)
+        ax1.grid(True, axis='y', linestyle=':', alpha=0.35)
+        for b, v in zip(bars, high_risk_probs):
+            ax1.text(b.get_x() + b.get_width() / 2, v + 0.02, f"{v:.0%}", ha='center', va='bottom', fontsize=9)
+
+        # 右图：季度风险评分热力图
+        ax2 = axes[1]
+        heat_data = []
+        quarter_labels = None
+        for s in scenarios:
+            df = self.scenario_forecasts[s]['forecast_df']
+            if quarter_labels is None:
+                quarter_labels = df['quarter'].tolist()
+            heat_data.append(df['risk_score'].tolist())
+        heat_data = np.array(heat_data)
+
+        im = ax2.imshow(heat_data, cmap='YlOrRd', aspect='auto', vmin=0, vmax=10)
+        ax2.set_title(t('季度风险评分热力图', 'Quarterly Risk-score Heatmap'), fontweight='bold')
+        ax2.set_yticks(range(len(names)))
+        ax2.set_yticklabels(names)
+        ax2.set_xticks(range(len(quarter_labels)))
+        ax2.set_xticklabels(quarter_labels, rotation=45, ha='right')
+        cbar = plt.colorbar(im, ax=ax2)
+        cbar.set_label(t('风险评分', 'Risk Score'))
+
+        for i in range(heat_data.shape[0]):
+            for j in range(heat_data.shape[1]):
+                ax2.text(j, i, f"{heat_data[i, j]:.1f}", ha='center', va='center', fontsize=7, color='black')
+
+        plt.suptitle(t('2026-2027年情景风险看板', '2026-2027 Scenario Risk Dashboard'), fontweight='bold')
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=320, bbox_inches='tight')
+            print(f"风险看板已保存到: {save_path}")
+        plt.show()
+
+        return fig
+
+    def run_2026_2027_regression_checks(self):
+        """2026-2027回归检查（结构稳定性测试，不依赖固定数值）"""
+        if not self.scenario_forecasts or not self.risk_assessments:
+            raise ValueError("请先完成预测与风险评估")
+
+        issues = []
+        expected_quarters = ['2026Q1', '2026Q2', '2026Q3', '2026Q4',
+                             '2027Q1', '2027Q2', '2027Q3', '2027Q4']
+
+        for scenario_id, data in self.scenario_forecasts.items():
+            df = data['forecast_df']
+            if len(df) != 8:
+                issues.append(f"情景{scenario_id}预测期数不是8，而是{len(df)}")
+            if df['quarter'].tolist() != expected_quarters:
+                issues.append(f"情景{scenario_id}季度标签不匹配2026-2027")
+            if 'risk_score' not in df.columns:
+                issues.append(f"情景{scenario_id}缺少risk_score列")
+            elif ((df['risk_score'] < 0) | (df['risk_score'] > 10)).any():
+                issues.append(f"情景{scenario_id}风险评分超出0-10范围")
+
+        for scenario_id, assessment in self.risk_assessments.items():
+            hp = assessment['high_risk_probability']
+            if hp < 0 or hp > 1:
+                issues.append(f"情景{scenario_id}高风险概率超出0-1范围")
+
+        return {
+            'passed': len(issues) == 0,
+            'issues': issues,
+            'checked_scenarios': list(self.scenario_forecasts.keys())
+        }
+
     def generate_report(self, output_path=None):
         """生成分析报告"""
         if not self.risk_assessments:
@@ -888,8 +976,20 @@ th {{ background:#f6f8fa; }}
             # 4. 生成可视化
             self.generate_visualizations(save_path=os.path.join(output_dir, 'scenario_analysis.png'))
 
+            # 4.1 生成风险看板
+            self.generate_risk_dashboard(save_path=os.path.join(output_dir, 'scenario_risk_dashboard.png'))
+
             # 5. 生成报告（Word可直接打开的.doc）
             self.generate_report(output_path=os.path.join(output_dir, 'scenario_analysis_report.doc'))
+
+            # 6. 2026-2027回归检查
+            regression_result = self.run_2026_2027_regression_checks()
+            if regression_result['passed']:
+                print("回归检查通过：季度结构、字段完整性与风险范围正常")
+            else:
+                print("回归检查发现问题:")
+                for issue in regression_result['issues']:
+                    print(f"  - {issue}")
 
             print("\n" + "=" * 60)
             print("情景分析完成!")

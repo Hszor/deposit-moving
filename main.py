@@ -172,9 +172,23 @@ def run_scenario_analysis(historical_df):
     print("生成可视化图表...")
     scenario_analyzer.generate_visualizations(save_path='results/scenario_analysis.png')
 
+    # 新增：风险看板图
+    print("生成风险看板图...")
+    scenario_analyzer.generate_risk_dashboard(save_path='results/scenario_risk_dashboard.png')
+
     # 生成详细报告
     print("生成分析报告...")
     scenario_analyzer.generate_report(output_path='results/scenario_analysis_report.doc')
+
+    # 新增：2026-2027回归检查
+    print("运行2026-2027回归检查...")
+    regression_result = scenario_analyzer.run_2026_2027_regression_checks()
+    if regression_result['passed']:
+        print("回归检查通过：季度结构、字段完整性与风险范围正常")
+    else:
+        print("回归检查发现问题:")
+        for issue in regression_result['issues']:
+            print(f"  - {issue}")
 
     # 导出所有结果
     print("导出分析结果...")
@@ -218,8 +232,9 @@ def main():
     print("2. results/warning_timeline.png - 预警时间线")
     print("3. results/warning_signals.csv - 预警信号数据")
     print("4. results/scenario_analysis.png - 情景分析可视化")
-    print("5. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
-    print("6. results/scenario_results/ - 情景分析详细结果")
+    print("5. results/scenario_risk_dashboard.png - 情景风险看板图")
+    print("6. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
+    print("7. results/scenario_results/ - 情景分析详细结果")
 
     print("\n下一步建议:")
     print("1. 查看报告了解关键发现")
