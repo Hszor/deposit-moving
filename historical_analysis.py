@@ -24,6 +24,119 @@ HAS_CJK_FONT = True
 def t(cn, en):
     return cn if HAS_CJK_FONT else en
 
+
+class WindowFeatureEngine:
+    """窗口特征引擎：窗口选择 -> 特征提取 -> 评分。"""
+
+    def __init__(self, feature_cols=None, alpha=0.3, beta=0.5, gamma=0.2):
+        self.feature_cols = feature_cols or ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.event_feature_table = None
+        self.feature_names = []
+        self.event_mean = None
+        self.event_std = None
+        self.feature_groups = {'level': [], 'structure': [], 'shape': []}
+
+    @staticmethod
+    def _safe_std(x):
+        return np.std(x) if np.std(x) > 1e-6 else 1e-6
+
+    @staticmethod
+    def _sigmoid(x):
+        return 1 / (1 + np.exp(-x))
+
+    def _extract_single_series_features(self, series, prefix):
+        s = pd.Series(series).dropna()
+        if s.empty:
+            s = pd.Series([0.0])
+
+        diff1 = s.diff().dropna()
+        diff2 = diff1.diff().dropna()
+        rolling_vol = s.rolling(window=min(3, len(s)), min_periods=1).std().fillna(0)
+
+        x = np.arange(len(s))
+        slope = np.polyfit(x, s.values, 1)[0] if len(s) >= 2 else 0.0
+
+        level = {
+            f'{prefix}_mean': float(s.mean()),
+            f'{prefix}_std': float(s.std()) if len(s) > 1 else 0.0,
+            f'{prefix}_p25': float(s.quantile(0.25)),
+            f'{prefix}_p75': float(s.quantile(0.75)),
+        }
+        structure = {
+            f'{prefix}_diff1_mean': float(diff1.mean()) if not diff1.empty else 0.0,
+            f'{prefix}_diff1_std': float(diff1.std()) if len(diff1) > 1 else 0.0,
+            f'{prefix}_diff2_mean': float(diff2.mean()) if not diff2.empty else 0.0,
+            f'{prefix}_slope': float(slope),
+            f'{prefix}_rolling_vol_mean': float(rolling_vol.mean()),
+        }
+        shape = {
+            f'{prefix}_skew': float(s.skew()) if len(s) > 2 else 0.0,
+            f'{prefix}_kurtosis': float(s.kurtosis()) if len(s) > 3 else 0.0,
+            f'{prefix}_acf1': float(s.autocorr(lag=1)) if len(s) > 2 else 0.0,
+        }
+
+        return level, structure, shape
+
+    def _extract_window_vector(self, df_window):
+        feat = {}
+        for col in self.feature_cols:
+            level, structure, shape = self._extract_single_series_features(df_window[col], col)
+            feat.update(level)
+            feat.update(structure)
+            feat.update(shape)
+        return feat
+
+    def fit(self, event_feature_table):
+        """event_feature_table: 每行一个事件窗口特征。"""
+        self.event_feature_table = event_feature_table.copy()
+        meta_cols = {'window_id', 'start_quarter', 'end_quarter', 'n_quarters'}
+        self.feature_names = [c for c in event_feature_table.columns if c not in meta_cols]
+
+        for name in self.feature_names:
+            if any(k in name for k in ['_mean', '_std', '_p25', '_p75']):
+                self.feature_groups['level'].append(name)
+            elif any(k in name for k in ['diff1', 'diff2', 'slope', 'rolling_vol']):
+                self.feature_groups['structure'].append(name)
+            else:
+                self.feature_groups['shape'].append(name)
+
+        mat = event_feature_table[self.feature_names].fillna(0).values
+        self.event_mean = mat.mean(axis=0)
+        self.event_std = np.array([self._safe_std(mat[:, i]) for i in range(mat.shape[1])])
+        return self
+
+    def score(self, vector_dict):
+        if self.event_mean is None:
+            raise ValueError('Feature engine not fitted')
+
+        vec = np.array([vector_dict.get(f, 0.0) for f in self.feature_names], dtype=float)
+        z = np.abs((vec - self.event_mean) / self.event_std)
+
+        idx_map = {f: i for i, f in enumerate(self.feature_names)}
+        def group_mean(group):
+            if not group:
+                return 0.0
+            return float(np.mean([z[idx_map[g]] for g in group]))
+
+        level_score = group_mean(self.feature_groups['level'])
+        structure_score = group_mean(self.feature_groups['structure'])
+        shape_score = group_mean(self.feature_groups['shape'])
+
+        # 越接近事件原型，风险越高，因此使用负向距离
+        raw = -(self.alpha * level_score + self.beta * structure_score + self.gamma * shape_score)
+        risk_index = float(100 * self._sigmoid(raw))
+
+        return {
+            'risk_index_2026': risk_index,
+            'level_score': level_score,
+            'structure_score': structure_score,
+            'shape_score': shape_score,
+            'raw_score': raw
+        }
+
 class DepositRelocationAnalyzer:
     """
     存款搬家历史回测分析器
@@ -435,6 +548,7 @@ class DepositRelocationAnalyzer:
             self.calculate_core_indicators()
 
         quarter_series = pd.to_datetime(self.df['date']).dt.to_period('Q')
+        engine = WindowFeatureEngine(feature_cols=feature_cols)
         rows = []
         for idx, (start_q, end_q) in enumerate(known_periods, 1):
             start_p = self._to_period(start_q)
@@ -450,10 +564,7 @@ class DepositRelocationAnalyzer:
                 'end_quarter': str(end_p),
                 'n_quarters': len(sub)
             }
-            for col in feature_cols:
-                row[f'{col}_mean'] = float(sub[col].mean())
-                row[f'{col}_std'] = float(sub[col].std()) if len(sub) > 1 else 0.0
-                row[f'{col}_slope'] = float(sub[col].iloc[-1] - sub[col].iloc[0]) if len(sub) > 1 else 0.0
+            row.update(engine._extract_window_vector(sub))
             rows.append(row)
 
         return pd.DataFrame(rows)
@@ -463,7 +574,7 @@ class DepositRelocationAnalyzer:
                                                    target_year=2026,
                                                    known_periods=None,
                                                    feature_cols=None):
-        """用已知窗口特征相似度评估目标年份（默认2026）是否像“搬家窗口”。"""
+        """用已知窗口特征评估目标年份（默认2026）的结构风险指数。"""
         if known_periods is None:
             known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
         if feature_cols is None:
@@ -485,23 +596,16 @@ class DepositRelocationAnalyzer:
         if 'maturity_rate' not in target.columns and {'maturity_amount', 'deposit_balance'}.issubset(target.columns):
             target['maturity_rate'] = target['maturity_amount'] / target['deposit_balance']
 
-        target_vec = np.array([target[c].mean() for c in feature_cols], dtype=float)
-        known_mat = np.column_stack([known_features[f'{c}_mean'].values for c in feature_cols])
+        engine = WindowFeatureEngine(feature_cols=feature_cols).fit(known_features)
+        target_vector = engine._extract_window_vector(target[feature_cols])
+        score = engine.score(target_vector)
 
-        # 用样本协方差做马氏距离近似（不足时退化为欧氏）
-        if known_mat.shape[0] >= 3:
-            cov = np.cov(known_mat.T)
-            cov += np.eye(cov.shape[0]) * 1e-6
-            inv_cov = np.linalg.pinv(cov)
-            distances = np.array([
-                np.sqrt((target_vec - x).T @ inv_cov @ (target_vec - x)) for x in known_mat
-            ])
-        else:
-            distances = np.linalg.norm(known_mat - target_vec, axis=1)
-
+        # 保留“最近窗口距离”作为可解释指标（基于均值特征）
+        target_mean_vec = np.array([target[c].mean() for c in feature_cols], dtype=float)
+        known_mean_mat = np.column_stack([known_features[f'{c}_mean'].values for c in feature_cols])
+        distances = np.linalg.norm(known_mean_mat - target_mean_vec, axis=1)
         min_dist = float(distances.min())
         similarity = float(np.exp(-min_dist))
-        risk_score_2026 = float(np.clip(similarity * 100, 0, 100))
 
         return {
             'target_year': target_year,
@@ -509,9 +613,47 @@ class DepositRelocationAnalyzer:
             'known_window_feature_table': known_features,
             'min_distance_to_known_window': min_dist,
             'similarity_score': similarity,
-            'risk_score_2026': risk_score_2026,
-            'will_relocate_2026': risk_score_2026 >= 55  # 测试阈值，可由用户后续调整
+            'risk_index_2026': score['risk_index_2026'],
+            'level_score': score['level_score'],
+            'structure_score': score['structure_score'],
+            'shape_score': score['shape_score']
         }
+
+    def leave_one_window_out_validation(self, known_periods=None, feature_cols=None):
+        """Leave-One-Window-Out验证，检查评分稳定性。"""
+        if known_periods is None:
+            known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
+        if feature_cols is None:
+            feature_cols = ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+
+        rows = []
+        for i in range(len(known_periods)):
+            train_windows = [w for j, w in enumerate(known_periods) if j != i]
+            test_window = known_periods[i]
+
+            train_features = self.extract_known_window_features(train_windows, feature_cols)
+            if train_features.empty:
+                continue
+            engine = WindowFeatureEngine(feature_cols=feature_cols).fit(train_features)
+
+            qs = pd.to_datetime(self.df['date']).dt.to_period('Q')
+            s, e = self._to_period(test_window[0]), self._to_period(test_window[1])
+            test_df = self.df.loc[(qs >= s) & (qs <= e), feature_cols].copy()
+            if test_df.empty:
+                continue
+
+            vec = engine._extract_window_vector(test_df)
+            score = engine.score(vec)
+            rows.append({
+                'held_out_window': f'{s}-{e}',
+                'risk_index': score['risk_index_2026'],
+                'level_score': score['level_score'],
+                'structure_score': score['structure_score'],
+                'shape_score': score['shape_score']
+            })
+
+        result_df = pd.DataFrame(rows)
+        return result_df
 
     def plot_known_vs_target_2026(self, target_df, evaluation_result, save_path=None):
         """高级对比图：已知窗口 vs 2026曲线与特征。"""
@@ -579,14 +721,23 @@ class DepositRelocationAnalyzer:
         # 4) 2026判定卡片
         ax4 = axes[1, 1]
         ax4.axis('off')
-        decision = '可能发生存款搬家' if evaluation_result['will_relocate_2026'] else '暂未显著接近搬家特征'
+        risk_index = evaluation_result['risk_index_2026']
+        if risk_index >= 80:
+            level = '极高风险'
+        elif risk_index >= 60:
+            level = '高度相似'
+        elif risk_index >= 30:
+            level = '结构异动'
+        else:
+            level = '常态区间'
         txt = (
             f"2026判定结果\n"
             f"{'=' * 18}\n"
-            f"风险得分: {evaluation_result['risk_score_2026']:.1f}/100\n"
+            f"风险指数: {risk_index:.1f}/100\n"
+            f"分级: {level}\n"
             f"相似度: {evaluation_result['similarity_score']:.3f}\n"
             f"最近窗口距离: {evaluation_result['min_distance_to_known_window']:.3f}\n"
-            f"结论: {decision}\n"
+            f"Level/Structure/Shape: {evaluation_result['level_score']:.2f} / {evaluation_result['structure_score']:.2f} / {evaluation_result['shape_score']:.2f}\n"
         )
         ax4.text(0.02, 0.95, txt, va='top', ha='left', fontsize=11,
                  bbox=dict(boxstyle='round,pad=0.5', facecolor='#f6f8fa', edgecolor='#d0d7de'))

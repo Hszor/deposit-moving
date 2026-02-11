@@ -223,9 +223,27 @@ def run_2026_known_window_assessment(historical_df, scenario_analyzer):
         known_periods=KNOWN_RELOCATION_PERIODS_2005_2025
     )
 
-    print(f"2026风险得分: {result['risk_score_2026']:.1f}/100")
+    print(f"2026风险指数: {result['risk_index_2026']:.1f}/100")
     print(f"与已知窗口最小距离: {result['min_distance_to_known_window']:.3f}")
-    print(f"判定结果: {'可能发生存款搬家' if result['will_relocate_2026'] else '暂未显著接近搬家特征'}")
+
+    if result['risk_index_2026'] >= 80:
+        level = '极高风险'
+    elif result['risk_index_2026'] >= 60:
+        level = '高度相似'
+    elif result['risk_index_2026'] >= 30:
+        level = '结构异动'
+    else:
+        level = '常态区间'
+    print(f"风险分级: {level}")
+
+    loo_df = analyzer.leave_one_window_out_validation(
+        known_periods=KNOWN_RELOCATION_PERIODS_2005_2025
+    )
+    if not loo_df.empty:
+        print("\nLOO窗口回归验证:")
+        print(loo_df.to_string(index=False))
+        loo_df.to_csv('results/loo_window_validation.csv', index=False, encoding='utf-8-sig')
+        print("LOO验证结果已保存: results/loo_window_validation.csv")
 
     analyzer.plot_known_vs_target_2026(
         target_df=projected_2026_df,
@@ -275,8 +293,9 @@ def main():
     print("1. results/scenario_analysis.png - 情景分析可视化（2026）")
     print("2. results/scenario_risk_dashboard.png - 情景风险看板图")
     print("3. results/known_windows_vs_2026.png - 已知窗口 vs 2026对比图")
-    print("4. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
-    print("5. results/scenario_results/ - 情景分析详细结果")
+    print("4. results/loo_window_validation.csv - 已知窗口LOO回归验证结果")
+    print("5. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
+    print("6. results/scenario_results/ - 情景分析详细结果")
 
     print("\n下一步建议:")
     print("1. 查看报告了解关键发现")
