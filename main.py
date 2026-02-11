@@ -56,11 +56,18 @@ warnings.filterwarnings('ignore')
 
 # 导入自定义模块
 try:
-    from feature_engine import WindowFeatureEngine, EventProfileBuilder, SimilarityScorer
+    from feature_engine import WindowFeatureEngine, EventProfileBuilder
     print("✅ 成功导入特征工程模块")
 except ImportError as e:
     print(f"❌ 无法导入特征工程模块: {e}")
     sys.exit(1)
+
+
+try:
+    from semi_supervised_detector import SemiSupervisedDetector
+    print("✅ 成功导入半监督检测模块")
+except ImportError as e:
+    print(f"❌ 无法导入半监督检测模块: {e}")
 
 try:
     from validation import CrossWindowValidator
@@ -220,7 +227,7 @@ def run_feature_engineering(event_window_data, output_dir='results'):
 
     return feature_engine, event_builder
 
-def run_model_validation(feature_engine, event_window_data, output_dir='results'):
+def run_model_validation(feature_engine, event_window_data, normal_window_data=None, output_dir='results'):
     """
     运行模型验证（Leave-One-Window-Out）
     """
@@ -234,9 +241,10 @@ def run_model_validation(feature_engine, event_window_data, output_dir='results'
         os.makedirs(validation_dir)
 
     # 运行验证
-    validator = CrossWindowValidator(feature_engine, SimilarityScorer)
+    validator = CrossWindowValidator(feature_engine, SemiSupervisedDetector)
     validation_results = validator.leave_one_window_out(
-        event_window_data, list(event_window_data.keys())
+        event_window_data,
+        normal_window_data
     )
 
     # 计算验证指标
@@ -257,12 +265,13 @@ def run_model_validation(feature_engine, event_window_data, output_dir='results'
     print(f"   精确率: {metrics.get('precision', 0):.3f}")
     print(f"   召回率: {metrics.get('recall', 0):.3f}")
     print(f"   F1分数: {metrics.get('f1_score', 0):.3f}")
-    print(f"   AUC: {metrics.get('auc', 0):.3f}")
+    print(f"   ROC AUC: {metrics.get('auc', 0):.3f}")
+    print(f"   PR AUC: {metrics.get('pr_auc', 0):.3f}")
     print(f"   正确识别率: {metrics.get('correct_rate', 0):.1%}")
 
     return validator, metrics
 
-def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir='results'):
+def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, output_dir='results'):
     """
     运行2026年风险评估
     """
@@ -275,11 +284,8 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     if not os.path.exists(assessment_dir):
         os.makedirs(assessment_dir)
 
-    # 创建相似度评分器
-    scorer = SimilarityScorer(event_builder.profile)
-
-    # 创建风险评估器
-    risk_assessor = StructuralRiskAssessor(event_builder.profile, scorer)
+    # 创建风险评估器（半监督双分布）
+    risk_assessor = StructuralRiskAssessor(detector)
 
     # 提取2026年特征
     print("\n📊 提取2026年预测特征...")
@@ -289,16 +295,14 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     cross_features = feature_engine.calculate_cross_features(forecast_2026)
     forecast_features_dict.update(cross_features)
 
-    # 转换为特征向量（与事件特征顺序一致）
-    feature_names = event_builder.feature_names
+    # 转换为特征向量（与训练特征顺序一致）
     forecast_vector = [forecast_features_dict.get(name, 0) for name in feature_names]
 
     # 执行风险评估
     print("🔍 执行结构风险评估...")
     assessment = risk_assessor.generate_risk_assessment(
         forecast_vector,
-        feature_names,
-        historical_features=event_builder.feature_df
+        feature_names
     )
 
     # 绘制风险分解图
@@ -314,7 +318,7 @@ def run_2026_assessment(feature_engine, event_builder, forecast_2026, output_dir
     print(f"\n📊 2026年风险评估结果:")
     print(f"   风险指数: {assessment['risk_index']:.1f}/100")
     print(f"   风险等级: {assessment['risk_level']}")
-    print(f"   结构分数: {assessment['score_breakdown']['structure_score']:.2f}")
+    print(f"   LR分数: {assessment['score_breakdown']['lr_score']:.3f}")
 
     # 解释结果
     print(f"\n💡 结果解释:")
@@ -335,7 +339,7 @@ def generate_2026_forecast(historical_df, n_quarters=4):
     last_date = historical_df['date'].max()
 
     # 使用'QE'（季度末）而不是'Q'
-    quarters_2026 = pd.period_range('2026Q1', periods=n_quarters, freq='Q')
+    quarters_2026 = pd.period_range('2026Q1', periods=n_quarters, freq='Q-DEC')
 
     # 简化预测：基于最近趋势外推，添加随机性
     forecast_data = {}
@@ -681,9 +685,25 @@ def main(data_file=None, output_dir='results'):
             event_window_data, output_dir
         )
 
-        # 4. 模型验证
+        # 4. 准备正常窗口（负样本）
+        normal_window_data = extract_window_data(historical_df, KNOWN_NORMAL_WINDOWS)
+        if not normal_window_data:
+            print("❌ 无法提取正常窗口数据，程序终止")
+            return False
+
+        # 5. 训练半监督检测器（事件分布 vs 正常分布）
+        event_feature_df = EventProfileBuilder(feature_engine).fit(event_window_data)
+        normal_feature_df = EventProfileBuilder(feature_engine).fit(normal_window_data)
+        feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
+        event_matrix = event_feature_df.reindex(columns=feature_names, fill_value=0).values
+        normal_matrix = normal_feature_df.reindex(columns=feature_names, fill_value=0).values
+
+        detector = SemiSupervisedDetector(robust=True, regularization=1e-4, lr_scale=1.0)
+        detector.fit(event_matrix, normal_matrix, feature_names=feature_names)
+
+        # 6. 模型验证（基于LR分类能力）
         validator, metrics = run_model_validation(
-            feature_engine, event_window_data, output_dir
+            feature_engine, event_window_data, normal_window_data, output_dir
         )
 
         # 检查模型稳健性
@@ -693,18 +713,18 @@ def main(data_file=None, output_dir='results'):
         else:
             print(f"\n✅ 模型稳健性良好 (正确识别率: {metrics['correct_rate']:.1%})")
 
-        # 5. 生成2026年预测数据
+        # 7. 生成2026年预测数据
         forecast_2026 = generate_2026_forecast(historical_df, n_quarters=4)
 
-        # 6. 2026年风险评估
+        # 8. 2026年风险评估
         risk_assessor, assessment = run_2026_assessment(
-            feature_engine, event_builder, forecast_2026, output_dir
+            feature_engine, detector, feature_names, forecast_2026, output_dir
         )
 
-        # 7. 创建高级可视化
+        # 9. 创建高级可视化
         create_advanced_visualization(historical_df, assessment, forecast_2026, output_dir)
 
-        # 8. 生成最终综合报告
+        # 10. 生成最终综合报告
         print("\n" + "=" * 60)
         print("📑 步骤6: 生成最终综合报告")
         print("=" * 60)
@@ -724,8 +744,10 @@ def main(data_file=None, output_dir='results'):
         report_lines.append("-" * 40)
         report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型")
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
-        report_lines.append(f"特征维度: {len(event_builder.feature_names)}维")
-        report_lines.append(f"模型稳健性: {metrics.get('correct_rate', 0):.1%}")
+        report_lines.append(f"特征维度: {len(feature_names)}维")
+        report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
+        report_lines.append(f"ROC AUC: {metrics.get('auc', 0):.3f}")
+        report_lines.append(f"PR AUC: {metrics.get('pr_auc', 0):.3f}")
 
         report_lines.append(f"\n🎯 2026年风险评估")
         report_lines.append("-" * 40)
@@ -738,9 +760,9 @@ def main(data_file=None, output_dir='results'):
         report_lines.append("-" * 40)
         if assessment:
             breakdown = assessment['score_breakdown']
-            report_lines.append(f"结构特征分数: {breakdown['structure_score']:.2f}")
-            report_lines.append(f"水平特征分数: {breakdown['level_score']:.2f}")
-            report_lines.append(f"形态特征分数: {breakdown['shape_score']:.2f}")
+            report_lines.append(f"log P_event: {breakdown['log_event']:.3f}")
+            report_lines.append(f"log P_normal: {breakdown['log_normal']:.3f}")
+            report_lines.append(f"LR分数: {breakdown['lr_score']:.3f}")
 
         report_lines.append(f"\n🎯 关键风险特征 (Top 5)")
         report_lines.append("-" * 40)
@@ -805,7 +827,8 @@ def main(data_file=None, output_dir='results'):
         print("=" * 80)
 
         print(f"\n📊 核心结果:")
-        print(f"   模型稳健性: {metrics.get('correct_rate', 0):.1%}")
+        print(f"   模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
+        print(f"   ROC AUC: {metrics.get('auc', 0):.3f}")
         if assessment:
             print(f"   2026年风险指数: {assessment['risk_index']:.1f}/100")
             print(f"   风险等级: {assessment['risk_level']}")
