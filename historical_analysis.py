@@ -445,6 +445,183 @@ class DepositRelocationAnalyzer:
 
         return "\n".join(summary_lines)
 
+    def extract_known_window_features(self, known_periods=None, feature_cols=None):
+        """基于已知窗口提取特征，不做自动识别。"""
+        if known_periods is None:
+            known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
+        if feature_cols is None:
+            feature_cols = ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+
+        if any(col not in self.df.columns for col in feature_cols):
+            self.calculate_core_indicators()
+
+        quarter_series = pd.to_datetime(self.df['date']).dt.to_period('Q')
+        rows = []
+        for idx, (start_q, end_q) in enumerate(known_periods, 1):
+            start_p = self._to_period(start_q)
+            end_p = self._to_period(end_q)
+            mask = (quarter_series >= start_p) & (quarter_series <= end_p)
+            sub = self.df.loc[mask, feature_cols].copy()
+            if sub.empty:
+                continue
+
+            row = {
+                'window_id': f'W{idx}',
+                'start_quarter': str(start_p),
+                'end_quarter': str(end_p),
+                'n_quarters': len(sub)
+            }
+            for col in feature_cols:
+                row[f'{col}_mean'] = float(sub[col].mean())
+                row[f'{col}_std'] = float(sub[col].std()) if len(sub) > 1 else 0.0
+                row[f'{col}_slope'] = float(sub[col].iloc[-1] - sub[col].iloc[0]) if len(sub) > 1 else 0.0
+            rows.append(row)
+
+        return pd.DataFrame(rows)
+
+    def evaluate_target_year_against_known_windows(self,
+                                                   target_df,
+                                                   target_year=2026,
+                                                   known_periods=None,
+                                                   feature_cols=None):
+        """用已知窗口特征相似度评估目标年份（默认2026）是否像“搬家窗口”。"""
+        if known_periods is None:
+            known_periods = KNOWN_RELOCATION_PERIODS_2005_2025
+        if feature_cols is None:
+            feature_cols = ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+
+        known_features = self.extract_known_window_features(known_periods=known_periods, feature_cols=feature_cols)
+        if known_features.empty:
+            raise ValueError('已知窗口特征为空，无法评估目标年份')
+
+        target = target_df.copy()
+        target['date'] = pd.to_datetime(target['date'])
+        target = target[target['date'].dt.year == target_year]
+        if target.empty:
+            raise ValueError(f'未找到{target_year}年的数据')
+
+        # 若目标数据缺派生列则补齐
+        if 'growth_gap' not in target.columns and {'deposit_yoy', 'm2_yoy'}.issubset(target.columns):
+            target['growth_gap'] = target['deposit_yoy'] - target['m2_yoy']
+        if 'maturity_rate' not in target.columns and {'maturity_amount', 'deposit_balance'}.issubset(target.columns):
+            target['maturity_rate'] = target['maturity_amount'] / target['deposit_balance']
+
+        target_vec = np.array([target[c].mean() for c in feature_cols], dtype=float)
+        known_mat = np.column_stack([known_features[f'{c}_mean'].values for c in feature_cols])
+
+        # 用样本协方差做马氏距离近似（不足时退化为欧氏）
+        if known_mat.shape[0] >= 3:
+            cov = np.cov(known_mat.T)
+            cov += np.eye(cov.shape[0]) * 1e-6
+            inv_cov = np.linalg.pinv(cov)
+            distances = np.array([
+                np.sqrt((target_vec - x).T @ inv_cov @ (target_vec - x)) for x in known_mat
+            ])
+        else:
+            distances = np.linalg.norm(known_mat - target_vec, axis=1)
+
+        min_dist = float(distances.min())
+        similarity = float(np.exp(-min_dist))
+        risk_score_2026 = float(np.clip(similarity * 100, 0, 100))
+
+        return {
+            'target_year': target_year,
+            'target_feature_mean': {c: float(target[c].mean()) for c in feature_cols},
+            'known_window_feature_table': known_features,
+            'min_distance_to_known_window': min_dist,
+            'similarity_score': similarity,
+            'risk_score_2026': risk_score_2026,
+            'will_relocate_2026': risk_score_2026 >= 55  # 测试阈值，可由用户后续调整
+        }
+
+    def plot_known_vs_target_2026(self, target_df, evaluation_result, save_path=None):
+        """高级对比图：已知窗口 vs 2026曲线与特征。"""
+        target_year = evaluation_result['target_year']
+        target = target_df.copy()
+        target['date'] = pd.to_datetime(target['date'])
+        target = target[target['date'].dt.year == target_year].copy()
+
+        if 'growth_gap' not in target.columns and {'deposit_yoy', 'm2_yoy'}.issubset(target.columns):
+            target['growth_gap'] = target['deposit_yoy'] - target['m2_yoy']
+        if 'maturity_rate' not in target.columns and {'maturity_amount', 'deposit_balance'}.issubset(target.columns):
+            target['maturity_rate'] = target['maturity_amount'] / target['deposit_balance']
+
+        known_tbl = evaluation_result['known_window_feature_table']
+        feat_cols = ['growth_gap', 'maturity_rate', 'high_rate_maturity']
+
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+        # 1) 特征均值雷达图
+        radar_ax = plt.subplot(2, 2, 1, polar=True)
+        labels = feat_cols
+        angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+        angles += angles[:1]
+
+        known_mean = [known_tbl[f'{c}_mean'].mean() for c in feat_cols]
+        target_mean = [evaluation_result['target_feature_mean'][c] for c in feat_cols]
+
+        # 归一化到同量纲
+        all_vals = np.array([known_mean, target_mean], dtype=float)
+        min_v = all_vals.min(axis=0)
+        max_v = all_vals.max(axis=0) + 1e-9
+        known_norm = ((np.array(known_mean) - min_v) / (max_v - min_v)).tolist()
+        target_norm = ((np.array(target_mean) - min_v) / (max_v - min_v)).tolist()
+
+        known_norm += known_norm[:1]
+        target_norm += target_norm[:1]
+        radar_ax.plot(angles, known_norm, 'b-', linewidth=2, label='已知窗口均值')
+        radar_ax.fill(angles, known_norm, alpha=0.15, color='b')
+        radar_ax.plot(angles, target_norm, 'r-', linewidth=2, label=f'{target_year}均值')
+        radar_ax.fill(angles, target_norm, alpha=0.15, color='r')
+        radar_ax.set_thetagrids(np.degrees(angles[:-1]), labels)
+        radar_ax.set_title('特征轮廓对比（归一化雷达图）')
+        radar_ax.legend(loc='upper right', bbox_to_anchor=(1.35, 1.15))
+
+        # 2) 窗口均值热力图
+        ax2 = axes[0, 1]
+        heat = np.column_stack([known_tbl[f'{c}_mean'].values for c in feat_cols])
+        im = ax2.imshow(heat, cmap='YlOrRd', aspect='auto')
+        ax2.set_title('已知窗口特征均值热力图')
+        ax2.set_xticks(range(len(feat_cols)))
+        ax2.set_xticklabels(feat_cols)
+        ax2.set_yticks(range(len(known_tbl)))
+        ax2.set_yticklabels(known_tbl['window_id'])
+        plt.colorbar(im, ax=ax2)
+
+        # 3) 2026季度曲线 vs 已知窗口均值水平线
+        ax3 = axes[1, 0]
+        q = target['date'].dt.to_period('Q').astype(str)
+        ax3.plot(q, target['growth_gap'], marker='o', linewidth=2, label='2026 growth_gap')
+        ax3.axhline(known_tbl['growth_gap_mean'].mean(), linestyle='--', color='gray', label='已知窗口均值')
+        ax3.set_title('2026增长缺口曲线对比')
+        ax3.tick_params(axis='x', rotation=45)
+        ax3.legend()
+
+        # 4) 2026判定卡片
+        ax4 = axes[1, 1]
+        ax4.axis('off')
+        decision = '可能发生存款搬家' if evaluation_result['will_relocate_2026'] else '暂未显著接近搬家特征'
+        txt = (
+            f"2026判定结果\n"
+            f"{'=' * 18}\n"
+            f"风险得分: {evaluation_result['risk_score_2026']:.1f}/100\n"
+            f"相似度: {evaluation_result['similarity_score']:.3f}\n"
+            f"最近窗口距离: {evaluation_result['min_distance_to_known_window']:.3f}\n"
+            f"结论: {decision}\n"
+        )
+        ax4.text(0.02, 0.95, txt, va='top', ha='left', fontsize=11,
+                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#f6f8fa', edgecolor='#d0d7de'))
+
+        plt.suptitle(f'已知存款搬家窗口特征 vs {target_year}对比看板', fontsize=15, fontweight='bold')
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=320, bbox_inches='tight')
+            print(f'对比图已保存到: {save_path}')
+        plt.show()
+
+        return fig
+
 
 # 辅助函数
 def create_sample_data():

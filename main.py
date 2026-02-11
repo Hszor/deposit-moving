@@ -150,7 +150,7 @@ def run_warning_system(analyzer):
     return warning_system
 
 def run_scenario_analysis(historical_df):
-    """运行情景分析"""
+    """运行情景分析（聚焦2026判定）"""
     print_section("步骤3: 情景分析")
 
     # 创建情景分析器
@@ -160,9 +160,9 @@ def run_scenario_analysis(historical_df):
     print("定义分析情景...")
     scenario_analyzer.define_scenarios()
 
-    # 生成预测
+    # 生成预测（仅2026，4个季度）
     print("生成情景预测...")
-    scenario_analyzer.generate_forecasts(periods=8, n_simulations=1000)
+    scenario_analyzer.generate_forecasts(periods=4, n_simulations=1000)
 
     # 风险评估
     print("进行风险评估...")
@@ -196,6 +196,63 @@ def run_scenario_analysis(historical_df):
 
     return scenario_analyzer
 
+
+def build_2026_weighted_projection(scenario_analyzer):
+    """按情景概率加权得到2026季度投影序列。"""
+    projections = []
+    scenario_ids = list(scenario_analyzer.scenario_forecasts.keys())
+    weights = np.array([
+        scenario_analyzer.scenario_forecasts[s]['scenario_info']['probability']
+        for s in scenario_ids
+    ], dtype=float)
+    weights = weights / weights.sum()
+
+    quarter_labels = scenario_analyzer.scenario_forecasts[scenario_ids[0]]['forecast_df']['quarter'].tolist()
+    for i, q in enumerate(quarter_labels):
+        growth_gap = 0.0
+        maturity_rate = 0.0
+        high_rate_maturity = 0.0
+        for w, sid in zip(weights, scenario_ids):
+            fdf = scenario_analyzer.scenario_forecasts[sid]['forecast_df']
+            growth_gap += w * float(fdf.loc[i, 'growth_gap_mean'])
+            maturity_rate += w * float(fdf.loc[i, 'maturity_rate_mean'])
+            high_rate_maturity += w * float(fdf.loc[i, 'high_rate_maturity_mean'])
+
+        projections.append({
+            'date': pd.Period(q, freq='Q').to_timestamp(),
+            'growth_gap': growth_gap,
+            'maturity_rate': maturity_rate,
+            'high_rate_maturity': high_rate_maturity
+        })
+
+    return pd.DataFrame(projections)
+
+
+def run_2026_known_window_assessment(historical_df, scenario_analyzer):
+    """不做存款搬家自动识别，直接用已知窗口特征判定2026。"""
+    print_section("步骤4: 2026年与已知窗口特征对比判定")
+    analyzer = DepositRelocationAnalyzer(historical_df)
+    analyzer.calculate_core_indicators()
+
+    projected_2026_df = build_2026_weighted_projection(scenario_analyzer)
+    result = analyzer.evaluate_target_year_against_known_windows(
+        target_df=projected_2026_df,
+        target_year=2026,
+        known_periods=KNOWN_RELOCATION_PERIODS_2005_2025
+    )
+
+    print(f"2026风险得分: {result['risk_score_2026']:.1f}/100")
+    print(f"与已知窗口最小距离: {result['min_distance_to_known_window']:.3f}")
+    print(f"判定结果: {'可能发生存款搬家' if result['will_relocate_2026'] else '暂未显著接近搬家特征'}")
+
+    analyzer.plot_known_vs_target_2026(
+        target_df=projected_2026_df,
+        evaluation_result=result,
+        save_path='results/known_windows_vs_2026.png'
+    )
+
+    return result
+
 def main():
     """主函数"""
     print_section("居民存款流向分析系统 | 版本 1.1（可视化增强版）")
@@ -215,26 +272,21 @@ def main():
     print(f"数据加载完成，时间范围: {df['date'].min().date()} 至 {df['date'].max().date()}")
     print(f"数据维度: {df.shape[0]}行 × {df.shape[1]}列")
 
-    # 2. 运行历史回测分析
-    analyzer = run_historical_analysis(df, use_known_period_calibration=True)
-
-    # 3. 运行预警系统
-    warning_system = run_warning_system(analyzer)
-
-    # 4. 运行情景分析
+    # 2. 运行情景分析（仅2026）
     scenario_analyzer = run_scenario_analysis(df)
+
+    # 3. 进行2026与已知窗口对比判定
+    assessment_2026 = run_2026_known_window_assessment(df, scenario_analyzer)
 
     # 5. 生成最终报告
     print_section("分析完成!")
 
     print("\n主要输出文件:")
-    print("1. results/historical_timeline.png - 历史存款搬家时间线")
-    print("2. results/warning_timeline.png - 预警时间线")
-    print("3. results/warning_signals.csv - 预警信号数据")
-    print("4. results/scenario_analysis.png - 情景分析可视化")
-    print("5. results/scenario_risk_dashboard.png - 情景风险看板图")
-    print("6. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
-    print("7. results/scenario_results/ - 情景分析详细结果")
+    print("1. results/scenario_analysis.png - 情景分析可视化（2026）")
+    print("2. results/scenario_risk_dashboard.png - 情景风险看板图")
+    print("3. results/known_windows_vs_2026.png - 已知窗口 vs 2026对比图")
+    print("4. results/scenario_analysis_report.doc - 情景分析报告（Word文档）")
+    print("5. results/scenario_results/ - 情景分析详细结果")
 
     print("\n下一步建议:")
     print("1. 查看报告了解关键发现")
