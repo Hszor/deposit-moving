@@ -14,35 +14,36 @@ class StructuralRiskAssessor:
         self.detector = detector
 
     def calculate_structural_drift(self, feature_vector, recent_feature_matrix=None):
-        """结构漂移：事件/正常马氏距离 + 可选KL/Wasserstein"""
+        """结构漂移：优先使用模型距离，原型模型下回退到原型偏离度。"""
         drift_metrics = {}
-        try:
-            drift_metrics['event_mahalanobis'] = self.detector.event_model.mahalanobis_distance(feature_vector)
-            drift_metrics['normal_mahalanobis'] = self.detector.normal_model.mahalanobis_distance(feature_vector)
-        except (ValueError, np.linalg.LinAlgError):
-            pass
+
+        if hasattr(self.detector, 'event_model') and getattr(self.detector, 'event_model', None) is not None:
+            try:
+                drift_metrics['event_mahalanobis'] = self.detector.event_model.mahalanobis_distance(feature_vector)
+                if getattr(self.detector, 'normal_model', None) is not None:
+                    drift_metrics['normal_mahalanobis'] = self.detector.normal_model.mahalanobis_distance(feature_vector)
+            except (ValueError, np.linalg.LinAlgError):
+                pass
+        else:
+            try:
+                score = self.detector.score(feature_vector)
+                drift_metrics['原型距离'] = float(score)
+            except (ValueError, np.linalg.LinAlgError):
+                pass
 
         if recent_feature_matrix is not None and len(recent_feature_matrix) > 0:
             recent = np.asarray(recent_feature_matrix, dtype=float)
             recent = np.nan_to_num(recent, nan=0.0, posinf=0.0, neginf=0.0)
-            event_mean = np.asarray(self.detector.event_model.mean, dtype=float)
-            normal_mean = np.asarray(self.detector.normal_model.mean, dtype=float)
             recent_mean = np.mean(recent, axis=0)
 
-            # 近似KL: 仅用均值差和协方差逆矩阵（二次型）
-            try:
-                d_event = recent_mean - event_mean
-                d_normal = recent_mean - normal_mean
-                kl_to_event = 0.5 * float(d_event.T @ self.detector.event_model.inv_cov @ d_event)
-                kl_to_normal = 0.5 * float(d_normal.T @ self.detector.normal_model.inv_cov @ d_normal)
-                drift_metrics['近似KL_相对事件分布'] = kl_to_event
-                drift_metrics['近似KL_相对正常分布'] = kl_to_normal
-            except (ValueError, np.linalg.LinAlgError):
-                pass
-
-            # 近似Wasserstein(一阶)：均值向量距离
-            drift_metrics['均值Wasserstein近似_相对事件分布'] = float(np.linalg.norm(recent_mean - event_mean, ord=2))
-            drift_metrics['均值Wasserstein近似_相对正常分布'] = float(np.linalg.norm(recent_mean - normal_mean, ord=2))
+            if hasattr(self.detector, 'event_model') and getattr(self.detector, 'event_model', None) is not None:
+                event_mean = np.asarray(self.detector.event_model.mean, dtype=float)
+                drift_metrics['均值Wasserstein近似_相对事件分布'] = float(np.linalg.norm(recent_mean - event_mean, ord=2))
+            elif hasattr(self.detector, 'prototype') and self.detector.prototype is not None:
+                scaled_recent_mean = self.detector._scale_vector(recent_mean)
+                drift_metrics['均值Wasserstein近似_相对事件原型'] = float(
+                    np.linalg.norm(scaled_recent_mean - self.detector.prototype, ord=2)
+                )
 
         return drift_metrics
 
@@ -120,7 +121,7 @@ class StructuralRiskAssessor:
         ax4 = axes[1, 1]
         self._plot_feature_z_scores(ax4, assessment['z_scores'], sensitivity=assessment.get('sensitivity'))
 
-        plt.suptitle('结构风险评估分解（LR半监督）', fontsize=14, fontweight='bold', y=1.02)
+        plt.suptitle('结构风险评估分解（原型距离）', fontsize=14, fontweight='bold', y=1.02)
         plt.tight_layout()
 
         if save_path:
@@ -167,7 +168,7 @@ class StructuralRiskAssessor:
         ax.grid(True, axis='x', alpha=0.2)
 
     def _plot_score_breakdown(self, ax, score_breakdown):
-        labels = ['事件对数似然', '正常对数似然', '似然比']
+        labels = ['原型相似度', '参考基线', '距离分数']
         scores = [
             score_breakdown['log_event'],
             score_breakdown['log_normal'],
@@ -184,7 +185,7 @@ class StructuralRiskAssessor:
                     f'{score:.2f}', ha='center', va='bottom' if height >= 0 else 'top', fontsize=10)
 
         ax.set_ylabel('值')
-        ax.set_title('对数似然分解（事件对比正常）')
+        ax.set_title('原型距离分解')
         ax.grid(True, alpha=0.3, axis='y')
 
     def _plot_risk_contributions(self, ax, contributions):

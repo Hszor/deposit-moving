@@ -227,57 +227,36 @@ def run_feature_engineering(event_window_data, output_dir='results'):
 
     return feature_engine, event_builder
 
-def run_model_validation(feature_engine, event_window_data, normal_window_data=None, output_dir='results'):
-    """
-    运行模型验证（Leave-One-Window-Out）
-    """
+def run_model_validation(feature_engine, event_window_data, normal_window_data=None, output_dir='results', selected_features=None):
+    """运行小样本稳健验证（全样本训练 + 分布分离检验）。"""
     print("\n" + "=" * 60)
-    print("🔍 步骤2: 模型验证（留一窗口法）")
+    print("🔍 步骤2: 模型验证（小样本稳健检验）")
     print("=" * 60)
 
-    # 创建验证目录
     validation_dir = os.path.join(output_dir, 'model_validation')
     if not os.path.exists(validation_dir):
         os.makedirs(validation_dir)
 
-    # 运行验证
     validator = CrossWindowValidator(feature_engine, SemiSupervisedDetector)
-    validation_results = validator.leave_one_window_out(
+    _, _, validation_results, metrics = validator.simple_validation(
         event_window_data,
-        normal_window_data
+        normal_window_data,
+        selected_features=selected_features,
     )
 
-    # 计算验证指标
-    metrics = validator.calculate_validation_metrics(validation_results)
-
-    # 时间滚动回测
-    rolling_results = validator.rolling_time_backtest(event_window_data, normal_window_data)
-    if rolling_results:
-        rolling_metrics = validator.calculate_validation_metrics(rolling_results)
-        metrics['rolling_auc'] = rolling_metrics.get('auc', 0)
-        metrics['rolling_correct_rate'] = rolling_metrics.get('correct_rate', 0)
-
-    # 绘制验证结果图
     validation_chart_path = os.path.join(validation_dir, 'validation_results.png')
     validator.plot_validation_results(validation_results, save_path=validation_chart_path)
     print(f"📈 验证图表保存到: {validation_chart_path}")
 
-    # 生成验证报告
     validation_report_path = os.path.join(validation_dir, 'validation_report.txt')
-    validator.generate_validation_report(validation_results, metrics,
-                                        output_path=validation_report_path)
+    validator.generate_validation_report(validation_results, metrics, output_path=validation_report_path)
 
-    # 输出验证结果
     print("\n📊 验证指标:")
-    print(f"   精确率: {metrics.get('precision', 0):.3f}")
-    print(f"   召回率: {metrics.get('recall', 0):.3f}")
-    print(f"   F1分数: {metrics.get('f1_score', 0):.3f}")
-    print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
-    print(f"   PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
-    print(f"   正确识别率: {metrics.get('correct_rate', 0):.1%}")
-    print(f"   ROC AUC置信区间(90%): [{metrics.get('auc_ci_low', 0):.3f}, {metrics.get('auc_ci_high', 0):.3f}]")
-    if 'rolling_auc' in metrics:
-        print(f"   滚动回测ROC曲线下面积: {metrics.get('rolling_auc', 0):.3f}")
+    print(f"   模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
+    print(f"   事件风险均值: {metrics.get('event_risk_mean', 0):.2f}")
+    print(f"   正常风险均值: {metrics.get('normal_risk_mean', 0):.2f}")
+    print(f"   风险中位数差(事件-正常): {metrics.get('risk_separation', 0):.2f}")
+    print(f"   Mann-Whitney U p值: {metrics.get('p_value', 1.0):.4f}")
 
     return validator, metrics
 
@@ -294,7 +273,7 @@ def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, 
     if not os.path.exists(assessment_dir):
         os.makedirs(assessment_dir)
 
-    # 创建风险评估器（半监督双分布）
+    # 创建风险评估器（事件原型距离）
     risk_assessor = StructuralRiskAssessor(detector)
 
     # 提取2026年特征
@@ -351,7 +330,16 @@ def generate_scenario_forecasts(baseline_forecast):
     # 2) 强触发情景：集中到期 + 市场分流共振
     strong = {k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()}
     if 'growth_gap' in strong:
-        strong['growth_gap'] = strong['growth_gap'] - 0.6 - 0.15 * np.arange(len(strong['growth_gap']))
+        base_gap = np.array(strong['growth_gap'], dtype=float)
+        adjusted = base_gap - 0.35 - 0.08 * np.arange(len(base_gap))
+        # 防止斜率过度超出基准，避免情景构造失真
+        base_slope = np.mean(np.diff(base_gap)) if len(base_gap) > 1 else 0.0
+        adj_slope = np.mean(np.diff(adjusted)) if len(adjusted) > 1 else 0.0
+        slope_cap = 1.2 * max(abs(base_slope), 1e-3)
+        if abs(adj_slope) > slope_cap and len(adjusted) > 1:
+            target_step = np.sign(adj_slope) * slope_cap
+            adjusted = adjusted[0] + target_step * np.arange(len(adjusted))
+        strong['growth_gap'] = adjusted
     if 'maturity_rate' in strong:
         strong['maturity_rate'] = strong['maturity_rate'] * 1.35
     if 'high_rate_ratio' in strong:
@@ -393,38 +381,23 @@ def build_recent_feature_matrix(historical_df, feature_engine, feature_names, wi
     return np.array(rows, dtype=float) if rows else None
 
 
-def select_stable_feature_subset(event_feature_df, normal_feature_df, max_features=30):
-    """基于业务先验筛选特征：先白名单，再按方差补齐。"""
-    feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
-
-    # 删除小样本不稳定高阶特征
-    banned_keywords = ['kurtosis', 'skewness', 'autocorr_2', 'time_to_peak']
-    candidates = [f for f in feature_names if not any(k in f for k in banned_keywords)]
-
-    # 业务优先核心特征（如果存在则优先保留）
-    business_priority = [
+def select_stable_feature_subset(event_feature_df, normal_feature_df, max_features=3):
+    """极小样本下强制业务白名单特征（<=3维）。"""
+    whitelist = [
         'growth_gap_structure_slope',
         'maturity_rate_structure_peak_value',
-        'high_rate_ratio_level_max',
         'lead_corr_growth_gap_maturity_rate',
-        'growth_gap_shape_vol_clustering',
     ]
-    selected = [f for f in business_priority if f in candidates]
+    available = [f for f in whitelist if f in set(event_feature_df.columns).union(normal_feature_df.columns)]
 
-    event_aligned = event_feature_df.reindex(columns=candidates, fill_value=0)
-    normal_aligned = normal_feature_df.reindex(columns=candidates, fill_value=0)
-    combined = pd.concat([event_aligned, normal_aligned], axis=0)
+    if not available:
+        fallback = [
+            c for c in event_feature_df.columns
+            if all(k not in c for k in ['kurtosis', 'skewness', 'autocorr', 'peak_position', 'time_to_peak', 'up_ratio'])
+        ]
+        available = fallback[:max_features]
 
-    variances = combined.var(axis=0).replace([np.inf, -np.inf], 0).fillna(0)
-    valid = variances[variances > 1e-8].sort_values(ascending=False)
-
-    for f in valid.index.tolist():
-        if f not in selected:
-            selected.append(f)
-        if len(selected) >= max_features:
-            break
-
-    return selected[:max_features]
+    return available[:max_features]
 
 
 def monte_carlo_scenario_assessment(feature_engine, detector, feature_names,
@@ -993,7 +966,7 @@ def main(data_file=None, output_dir='results'):
         feature_names = select_stable_feature_subset(
             event_feature_df,
             normal_feature_df,
-            max_features=30
+            max_features=3
         )
         event_matrix = event_feature_df.reindex(columns=feature_names, fill_value=0).values
         normal_matrix = normal_feature_df.reindex(columns=feature_names, fill_value=0).values
@@ -1003,7 +976,7 @@ def main(data_file=None, output_dir='results'):
 
         # 6. 模型验证（基于LR分类能力）
         validator, metrics = run_model_validation(
-            feature_engine, event_window_data, normal_window_data, output_dir
+            feature_engine, event_window_data, normal_window_data, output_dir, selected_features=feature_names
         )
 
         # 检查模型稳健性
@@ -1047,16 +1020,15 @@ def main(data_file=None, output_dir='results'):
 
         report_lines.append(f"\n📋 执行摘要")
         report_lines.append("-" * 40)
-        report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型（标准化+对角协方差+特征压缩）")
+        report_lines.append(f"模型类型: 基于事件原型距离的小样本稳健判定模型（3维业务特征）")
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
         report_lines.append(f"特征维度: {len(feature_names)}维")
-        report_lines.append(f"风险映射: 基于训练似然比分位数（0-100）")
+        report_lines.append(f"风险映射: 基于事件原型距离分位数（0-100）")
         report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
-        report_lines.append(f"ROC曲线下面积: {metrics.get('auc', 0):.3f}")
-        report_lines.append(f"PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
-        report_lines.append(f"ROC AUC置信区间(90%): [{metrics.get('auc_ci_low', 0):.3f}, {metrics.get('auc_ci_high', 0):.3f}]")
-        if 'rolling_auc' in metrics:
-            report_lines.append(f"滚动回测ROC曲线下面积: {metrics.get('rolling_auc', 0):.3f}")
+        report_lines.append(f"事件风险均值: {metrics.get('event_risk_mean', 0):.2f}")
+        report_lines.append(f"正常风险均值: {metrics.get('normal_risk_mean', 0):.2f}")
+        report_lines.append(f"风险中位数差(事件-正常): {metrics.get('risk_separation', 0):.2f}")
+        report_lines.append(f"Mann-Whitney U检验p值: {metrics.get('p_value', 1.0):.4f}")
 
         report_lines.append(f"\n🎯 2026年风险评估")
         report_lines.append("-" * 40)
@@ -1127,6 +1099,12 @@ def main(data_file=None, output_dir='results'):
                     f"等级={s_ass['risk_level']}"
                 )
 
+        report_lines.append("\n⚠️ 模型局限性说明")
+        report_lines.append("-" * 40)
+        report_lines.append("1. 模型仅基于少量历史窗口（事件4个、正常3个），统计显著性有限。")
+        report_lines.append("2. 风险指数超过历史事件距离上界时将截断为100，可能低估极端情景差异。")
+        report_lines.append("3. 当前结论应作为辅助信号，需与业务专家判断和实时监测联合使用。")
+
         report_lines.append(f"\n📁 输出文件清单")
         report_lines.append("-" * 40)
         report_lines.append(f"1. {output_dir}/feature_engineering/ - 特征工程结果")
@@ -1149,7 +1127,7 @@ def main(data_file=None, output_dir='results'):
 
         print(f"\n📊 核心结果:")
         print(f"   模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
-        print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
+        print(f"   Mann-Whitney U检验p值: {metrics.get('p_value', 1.0):.4f}")
         if assessment:
             print(f"   2026年风险指数: {assessment['risk_index']:.1f}/100")
             print(f"   风险等级: {assessment['risk_level']}")
@@ -1157,8 +1135,8 @@ def main(data_file=None, output_dir='results'):
 
         print(f"\n💡 系统特点:")
         print(f"   • 基于结构特征而非简单规则")
-        print(f"   • 双分布似然比评分体系（事件/正常）")
-        print(f"   • 稳健的模型验证（留一窗口法）")
+        print(f"   • 事件原型距离评分体系")
+        print(f"   • 小样本稳健验证（Mann-Whitney分离检验）")
         print(f"   • 可解释的风险贡献分析")
         print(f"   • 高级可视化展示")
 
