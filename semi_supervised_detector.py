@@ -16,6 +16,8 @@ class SemiSupervisedDetector:
         self.normal_model = DistributionModel(robust=robust, regularization=regularization)
         self.feature_names = []
         self.lr_scale = lr_scale
+        self.lr_center = 0.0
+        self.lr_temperature = 1.0
 
     def fit(self, event_features, normal_features, feature_names=None):
         event_matrix = np.asarray(event_features, dtype=float)
@@ -32,6 +34,13 @@ class SemiSupervisedDetector:
 
         self.event_model.fit(event_matrix, feature_names=self.feature_names)
         self.normal_model.fit(normal_matrix, feature_names=self.feature_names)
+
+        # 基于训练样本自动做分数温度缩放，缓解风险指数饱和
+        combined = np.vstack([event_matrix, normal_matrix])
+        train_lr = self.score_batch(combined)
+        self.lr_center = float(np.median(train_lr))
+        lr_std = float(np.std(train_lr))
+        self.lr_temperature = max(lr_std, 1e-3)
         return self
 
     def score(self, x):
@@ -47,10 +56,13 @@ class SemiSupervisedDetector:
 
     def risk_index(self, lr_score):
         safe_lr = float(np.nan_to_num(lr_score, nan=0.0, posinf=1e6, neginf=-1e6))
-        return float(100 * self._sigmoid(self.lr_scale * safe_lr))
+        normalized_lr = (safe_lr - self.lr_center) / self.lr_temperature
+        return float(100 * self._sigmoid(self.lr_scale * normalized_lr))
 
-    def predict_label(self, lr_score, threshold=0.0):
+    def predict_label(self, lr_score, threshold=None):
         """LR>0 判定更接近事件分布"""
+        if threshold is None:
+            threshold = self.lr_center
         return int(lr_score > threshold)
 
     def assess_vector(self, x):

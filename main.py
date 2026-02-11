@@ -393,6 +393,25 @@ def build_recent_feature_matrix(historical_df, feature_engine, feature_names, wi
     return np.array(rows, dtype=float) if rows else None
 
 
+def select_stable_feature_subset(event_feature_df, normal_feature_df, max_features=30):
+    """从高维特征中筛选稳定且有区分度的子集，避免小样本高维过拟合。"""
+    feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
+    event_aligned = event_feature_df.reindex(columns=feature_names, fill_value=0)
+    normal_aligned = normal_feature_df.reindex(columns=feature_names, fill_value=0)
+
+    combined = pd.concat([event_aligned, normal_aligned], axis=0)
+    variances = combined.var(axis=0).replace([np.inf, -np.inf], 0).fillna(0)
+
+    # 过滤近常数特征
+    valid = variances[variances > 1e-8]
+    if valid.empty:
+        selected = feature_names[:max_features]
+    else:
+        selected = valid.sort_values(ascending=False).head(max_features).index.tolist()
+
+    return selected
+
+
 def monte_carlo_scenario_assessment(feature_engine, detector, feature_names,
                                     scenario_forecast, output_dir, scenario_name,
                                     recent_feature_matrix=None, n_sim=300, perturb_ratio=0.1):
@@ -956,7 +975,11 @@ def main(data_file=None, output_dir='results'):
         # 5. 训练半监督检测器（事件分布 vs 正常分布）
         event_feature_df = EventProfileBuilder(feature_engine).fit(event_window_data)
         normal_feature_df = EventProfileBuilder(feature_engine).fit(normal_window_data)
-        feature_names = sorted(set(event_feature_df.columns).union(normal_feature_df.columns))
+        feature_names = select_stable_feature_subset(
+            event_feature_df,
+            normal_feature_df,
+            max_features=30
+        )
         event_matrix = event_feature_df.reindex(columns=feature_names, fill_value=0).values
         normal_matrix = normal_feature_df.reindex(columns=feature_names, fill_value=0).values
 
@@ -1009,9 +1032,10 @@ def main(data_file=None, output_dir='results'):
 
         report_lines.append(f"\n📋 执行摘要")
         report_lines.append("-" * 40)
-        report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型")
+        report_lines.append(f"模型类型: 基于已知窗口特征的半监督判定模型（温度缩放+特征压缩）")
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
         report_lines.append(f"特征维度: {len(feature_names)}维")
+        report_lines.append(f"分数中心: {detector.lr_center:.3f}, 温度: {detector.lr_temperature:.3f}")
         report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
         report_lines.append(f"ROC曲线下面积: {metrics.get('auc', 0):.3f}")
         report_lines.append(f"PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
