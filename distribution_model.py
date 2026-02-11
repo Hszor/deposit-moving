@@ -27,6 +27,7 @@ class DistributionModel:
         feature_names : list[str]
         """
         X = np.asarray(feature_matrix, dtype=float)
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         if X.ndim != 2:
             raise ValueError("feature_matrix must be 2D")
         if X.shape[0] < 2:
@@ -64,12 +65,15 @@ class DistributionModel:
             self.inv_cov = np.linalg.pinv(self.cov)
             _, log_det = np.linalg.slogdet(self.cov)
 
+        if not np.isfinite(log_det):
+            log_det = 0.0
         self.log_det_cov = float(log_det)
         return self
 
     def mahalanobis_distance(self, x):
         """返回马氏距离"""
         x = np.asarray(x, dtype=float)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         diff = x - self.mean
         dist2 = float(diff.T @ self.inv_cov @ diff)
         return np.sqrt(max(dist2, 0.0))
@@ -77,14 +81,17 @@ class DistributionModel:
     def log_likelihood(self, x):
         """返回不含常数项的对数似然"""
         x = np.asarray(x, dtype=float)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         diff = x - self.mean
         quad = float(diff.T @ self.inv_cov @ diff)
         n_features = len(diff)
-        return -0.5 * (quad + self.log_det_cov + n_features * np.log(2 * np.pi))
+        ll = -0.5 * (quad + self.log_det_cov + n_features * np.log(2 * np.pi))
+        return float(np.nan_to_num(ll, nan=-1e6, posinf=1e6, neginf=-1e6))
 
     def diagonal_log_likelihood_contrib(self, x):
         """基于对角协方差近似的特征级对数似然贡献（用于解释）"""
         x = np.asarray(x, dtype=float)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         variances = np.diag(self.cov)
         safe_var = np.where(variances <= 1e-10, 1e-10, variances)
 

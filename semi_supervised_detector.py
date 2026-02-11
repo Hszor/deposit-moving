@@ -20,6 +20,8 @@ class SemiSupervisedDetector:
     def fit(self, event_features, normal_features, feature_names=None):
         event_matrix = np.asarray(event_features, dtype=float)
         normal_matrix = np.asarray(normal_features, dtype=float)
+        event_matrix = np.nan_to_num(event_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+        normal_matrix = np.nan_to_num(normal_matrix, nan=0.0, posinf=0.0, neginf=0.0)
 
         if event_matrix.ndim != 2 or normal_matrix.ndim != 2:
             raise ValueError("event_features and normal_features must be 2D matrices")
@@ -36,14 +38,16 @@ class SemiSupervisedDetector:
         """似然比 LR = log P_event - log P_normal"""
         log_event = self.event_model.log_likelihood(x)
         log_normal = self.normal_model.log_likelihood(x)
-        return float(log_event - log_normal)
+        lr = log_event - log_normal
+        return float(np.nan_to_num(lr, nan=0.0, posinf=1e6, neginf=-1e6))
 
     def score_batch(self, X):
         X = np.asarray(X, dtype=float)
         return np.array([self.score(row) for row in X])
 
     def risk_index(self, lr_score):
-        return float(100 * self._sigmoid(self.lr_scale * lr_score))
+        safe_lr = float(np.nan_to_num(lr_score, nan=0.0, posinf=1e6, neginf=-1e6))
+        return float(100 * self._sigmoid(self.lr_scale * safe_lr))
 
     def predict_label(self, lr_score, threshold=0.0):
         """LR>0 判定更接近事件分布"""
@@ -52,7 +56,7 @@ class SemiSupervisedDetector:
     def assess_vector(self, x):
         log_event = self.event_model.log_likelihood(x)
         log_normal = self.normal_model.log_likelihood(x)
-        lr_score = float(log_event - log_normal)
+        lr_score = float(np.nan_to_num(log_event - log_normal, nan=0.0, posinf=1e6, neginf=-1e6))
 
         event_contrib = self.event_model.diagonal_log_likelihood_contrib(x)
         normal_contrib = self.normal_model.diagonal_log_likelihood_contrib(x)

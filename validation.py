@@ -109,7 +109,8 @@ class CrossWindowValidator:
     def _extract_single_window_vector(self, window_series_dict, feature_names):
         feature_dict = self.feature_engine.extract_all_features(window_series_dict)
         feature_dict.update(self.feature_engine.calculate_cross_features(window_series_dict))
-        return np.array([feature_dict.get(name, 0) for name in feature_names], dtype=float)
+        vector = np.array([feature_dict.get(name, 0) for name in feature_names], dtype=float)
+        return np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0)
 
     def calculate_validation_metrics(self, results):
         if not results:
@@ -117,14 +118,21 @@ class CrossWindowValidator:
 
         y_true = np.array([r['true_label'] for r in results])
         y_pred = np.array([r['predicted_label'] for r in results])
-        y_score = np.array([r['lr_score'] for r in results])
+        y_score = np.array([r['lr_score'] for r in results], dtype=float)
+        y_score = np.nan_to_num(y_score, nan=0.0, posinf=1e6, neginf=-1e6)
 
         precision, recall, f1, _ = precision_recall_fscore_support(
             y_true, y_pred, average='binary', zero_division=0
         )
 
-        auc = roc_auc_score(y_true, y_score) if len(np.unique(y_true)) > 1 else 0.5
-        pr_auc = average_precision_score(y_true, y_score) if len(np.unique(y_true)) > 1 else 0.5
+        if len(np.unique(y_true)) > 1:
+            try:
+                auc = roc_auc_score(y_true, y_score)
+                pr_auc = average_precision_score(y_true, y_score)
+            except ValueError:
+                auc, pr_auc = 0.5, 0.5
+        else:
+            auc, pr_auc = 0.5, 0.5
 
         return {
             'precision': float(precision),
