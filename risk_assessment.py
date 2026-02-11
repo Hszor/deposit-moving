@@ -105,44 +105,47 @@ class StructuralRiskAssessor:
         return fig
 
     def _create_risk_dashboard(self, ax, assessment):
-        """创建更直观的水平风险仪表盘"""
-        risk_index = float(assessment['risk_index'])
+        risk_index = assessment['risk_index']
         risk_level = assessment['risk_level']
 
         ax.clear()
-        ax.set_xlim(0, 100)
-        ax.set_ylim(0, 1)
+        ax.set_aspect('equal')
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_ylim(-1.2, 1.2)
 
-        # 分段颜色条
-        segments = [
-            (0, 30, '#2ECC71', '正常'),
-            (30, 50, '#F1C40F', '关注'),
-            (50, 70, '#E67E22', '预警'),
-            (70, 85, '#E74C3C', '高风险'),
-            (85, 100, '#8E2A2A', '极高风险'),
+        regions = [
+            (0, 30, 'green', '正常'),
+            (30, 50, 'yellow', '关注'),
+            (50, 70, 'orange', '预警'),
+            (70, 85, 'red', '高风险'),
+            (85, 100, 'darkred', '极高风险')
         ]
 
-        for left, right, color, label in segments:
-            ax.barh(y=0.5, width=right-left, left=left, height=0.28,
-                    color=color, alpha=0.85, edgecolor='white')
-            ax.text((left+right)/2, 0.22, label, ha='center', va='center', fontsize=9)
+        for start, end, color, label in regions:
+            start_angle = np.pi * (start / 100)
+            end_angle = np.pi * (end / 100)
+            angles_region = np.linspace(start_angle, end_angle, 50)
+            x = np.cos(angles_region)
+            y = np.sin(angles_region)
+            ax.fill_betweenx(y, 0, x, color=color, alpha=0.2)
 
-        # 指针
-        ax.plot([risk_index, risk_index], [0.66, 0.95], color='black', linewidth=2)
-        ax.scatter([risk_index], [0.97], color='black', s=50, zorder=3)
+            mid_angle = (start_angle + end_angle) / 2
+            ax.text(0.8 * np.cos(mid_angle), 0.8 * np.sin(mid_angle), label,
+                    ha='center', va='center', fontsize=9, fontweight='bold',
+                    rotation=np.degrees(mid_angle) - 90)
 
-        # 数值与说明
-        ax.text(50, 0.02, f'风险指数：{risk_index:.1f} / 100    风险等级：{risk_level}',
-                ha='center', va='bottom', fontsize=11, fontweight='bold')
+        pointer_angle = np.pi * (risk_index / 100)
+        ax.plot([0, 0.9 * np.cos(pointer_angle)], [0, 0.9 * np.sin(pointer_angle)], 'k-', linewidth=3)
+        ax.plot(0, 0, 'ko', markersize=10)
 
-        ax.set_yticks([])
-        ax.set_xticks([0, 30, 50, 70, 85, 100])
-        ax.set_xlabel('风险区间')
-        ax.set_title('风险仪表盘（水平分段）', fontsize=12, fontweight='bold')
-        ax.grid(True, axis='x', alpha=0.2)
+        ax.text(0, -0.5, f'风险指数: {risk_index:.1f}', ha='center', va='center', fontsize=12, fontweight='bold')
+        ax.text(0, -0.6, f'风险等级: {risk_level}', ha='center', va='center', fontsize=10)
+
+        ax.axis('off')
+        ax.set_title('风险仪表盘', fontsize=12, fontweight='bold')
 
     def _plot_score_breakdown(self, ax, score_breakdown):
-        labels = ['事件对数似然', '正常对数似然', '似然比']
+        labels = ['log_event', 'log_normal', 'LR']
         scores = [
             score_breakdown['log_event'],
             score_breakdown['log_normal'],
@@ -159,7 +162,7 @@ class StructuralRiskAssessor:
                     f'{score:.2f}', ha='center', va='bottom' if height >= 0 else 'top', fontsize=10)
 
         ax.set_ylabel('值')
-        ax.set_title('对数似然分解（事件对比正常）')
+        ax.set_title('对数似然分解')
         ax.grid(True, alpha=0.3, axis='y')
 
     def _plot_risk_contributions(self, ax, contributions):
@@ -182,8 +185,8 @@ class StructuralRiskAssessor:
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(short_features)
-        ax.set_xlabel('标准化似然比贡献')
-        ax.set_title('高贡献风险特征（前10）')
+        ax.set_xlabel('标准化LLR贡献')
+        ax.set_title('Top风险特征贡献')
         ax.grid(True, alpha=0.3, axis='x')
 
         for bar, value in zip(bars, contrib_values):
@@ -219,8 +222,8 @@ class StructuralRiskAssessor:
         ax.axvline(x=np.median(values), color='orange', linestyle='--', alpha=0.7, label='中位贡献')
         ax.set_yticks(y_pos)
         ax.set_yticklabels(categories)
-        ax.set_xlabel('|似然比贡献|')
-        ax.set_title('关键特征贡献强度（绝对值）')
+        ax.set_xlabel('|LLR贡献|')
+        ax.set_title('关键特征贡献强度')
         ax.grid(True, alpha=0.3)
         ax.legend()
 
@@ -240,9 +243,9 @@ class StructuralRiskAssessor:
         report_lines.extend([
             "\n📈 似然比分解",
             "-" * 40,
-            f"事件分布对数似然: {breakdown['log_event']:.3f}",
-            f"正常分布对数似然: {breakdown['log_normal']:.3f}",
-            f"似然比分数: {breakdown['lr_score']:.3f}",
+            f"log P_event: {breakdown['log_event']:.3f}",
+            f"log P_normal: {breakdown['log_normal']:.3f}",
+            f"LR分数: {breakdown['lr_score']:.3f}",
         ])
 
         drift = assessment['drift_metrics']
@@ -250,8 +253,8 @@ class StructuralRiskAssessor:
             report_lines.extend([
                 "\n📊 结构漂移指标",
                 "-" * 40,
-                f"事件分布马氏距离: {drift.get('event_mahalanobis', 0):.3f}",
-                f"正常分布马氏距离: {drift.get('normal_mahalanobis', 0):.3f}",
+                f"event_mahalanobis: {drift.get('event_mahalanobis', 0):.3f}",
+                f"normal_mahalanobis: {drift.get('normal_mahalanobis', 0):.3f}",
             ])
 
         contributions = assessment['risk_contributions']
