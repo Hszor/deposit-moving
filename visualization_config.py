@@ -6,6 +6,8 @@ visualization_config.py
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
+import numpy as np
+import pandas as pd
 
 
 def configure_visualization_style():
@@ -109,7 +111,7 @@ def create_structural_comparison_plot(historical_data, forecast_data,
     if forecast_data and 'growth_gap' in forecast_data:
         # 创建预测时间序列
         forecast_dates = pd.date_range('2026-01-01', periods=len(forecast_data['growth_gap']),
-                                       freq='Q')
+                                       freq='QE')
         ax1.plot(forecast_dates, forecast_data['growth_gap'],
                  color=COLORS['forecast'], linewidth=2.5, marker='o',
                  markersize=8, label='2026年预测')
@@ -142,7 +144,7 @@ def create_structural_comparison_plot(historical_data, forecast_data,
     # 绘制预测数据
     if forecast_data and 'maturity_rate' in forecast_data:
         forecast_dates = pd.date_range('2026-01-01', periods=len(forecast_data['maturity_rate']),
-                                       freq='Q')
+                                       freq='QE')
         ax2.plot(forecast_dates, forecast_data['maturity_rate'] * 100,
                  color=COLORS['forecast'], linewidth=2.5, marker='s',
                  markersize=8)
