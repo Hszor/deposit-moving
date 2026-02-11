@@ -232,7 +232,7 @@ def run_model_validation(feature_engine, event_window_data, normal_window_data=N
     运行模型验证（Leave-One-Window-Out）
     """
     print("\n" + "=" * 60)
-    print("🔍 步骤2: 模型验证 (Leave-One-Window-Out)")
+    print("🔍 步骤2: 模型验证（留一窗口法）")
     print("=" * 60)
 
     # 创建验证目录
@@ -250,6 +250,13 @@ def run_model_validation(feature_engine, event_window_data, normal_window_data=N
     # 计算验证指标
     metrics = validator.calculate_validation_metrics(validation_results)
 
+    # 时间滚动回测
+    rolling_results = validator.rolling_time_backtest(event_window_data, normal_window_data)
+    if rolling_results:
+        rolling_metrics = validator.calculate_validation_metrics(rolling_results)
+        metrics['rolling_auc'] = rolling_metrics.get('auc', 0)
+        metrics['rolling_correct_rate'] = rolling_metrics.get('correct_rate', 0)
+
     # 绘制验证结果图
     validation_chart_path = os.path.join(validation_dir, 'validation_results.png')
     validator.plot_validation_results(validation_results, save_path=validation_chart_path)
@@ -265,13 +272,16 @@ def run_model_validation(feature_engine, event_window_data, normal_window_data=N
     print(f"   精确率: {metrics.get('precision', 0):.3f}")
     print(f"   召回率: {metrics.get('recall', 0):.3f}")
     print(f"   F1分数: {metrics.get('f1_score', 0):.3f}")
-    print(f"   ROC AUC: {metrics.get('auc', 0):.3f}")
-    print(f"   PR AUC: {metrics.get('pr_auc', 0):.3f}")
+    print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
+    print(f"   PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
     print(f"   正确识别率: {metrics.get('correct_rate', 0):.1%}")
+    print(f"   ROC AUC置信区间(90%): [{metrics.get('auc_ci_low', 0):.3f}, {metrics.get('auc_ci_high', 0):.3f}]")
+    if 'rolling_auc' in metrics:
+        print(f"   滚动回测ROC曲线下面积: {metrics.get('rolling_auc', 0):.3f}")
 
     return validator, metrics
 
-def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, output_dir='results'):
+def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, output_dir='results', recent_feature_matrix=None):
     """
     运行2026年风险评估
     """
@@ -302,7 +312,8 @@ def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, 
     print("🔍 执行结构风险评估...")
     assessment = risk_assessor.generate_risk_assessment(
         forecast_vector,
-        feature_names
+        feature_names,
+        recent_feature_matrix=recent_feature_matrix
     )
 
     # 绘制风险分解图
@@ -318,13 +329,264 @@ def run_2026_assessment(feature_engine, detector, feature_names, forecast_2026, 
     print(f"\n📊 2026年风险评估结果:")
     print(f"   风险指数: {assessment['risk_index']:.1f}/100")
     print(f"   风险等级: {assessment['risk_level']}")
-    print(f"   LR分数: {assessment['score_breakdown']['lr_score']:.3f}")
+    print(f"   似然比分数: {assessment['score_breakdown']['lr_score']:.3f}")
 
     # 解释结果
     print(f"\n💡 结果解释:")
     print(f"   {assessment['risk_description']}")
 
     return risk_assessor, assessment
+
+
+
+def generate_scenario_forecasts(baseline_forecast):
+    """基于基准预测构造三种代表性情景"""
+    scenarios = {}
+
+    # 1) 基准情景：经济温和修复
+    scenarios['基准情景（经济温和修复）'] = {
+        k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()
+    }
+
+    # 2) 强触发情景：集中到期 + 市场分流共振
+    strong = {k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()}
+    if 'growth_gap' in strong:
+        strong['growth_gap'] = strong['growth_gap'] - 0.6 - 0.15 * np.arange(len(strong['growth_gap']))
+    if 'maturity_rate' in strong:
+        strong['maturity_rate'] = strong['maturity_rate'] * 1.35
+    if 'high_rate_ratio' in strong:
+        strong['high_rate_ratio'] = strong['high_rate_ratio'] * 1.40
+    scenarios['强触发情景（集中到期与市场分流共振）'] = strong
+
+    # 3) 弱分流情景：避险偏好上升，资金回流存款
+    weak = {k: np.array(v, dtype=float).copy() for k, v in baseline_forecast.items()}
+    if 'growth_gap' in weak:
+        weak['growth_gap'] = weak['growth_gap'] + 0.45
+    if 'maturity_rate' in weak:
+        weak['maturity_rate'] = weak['maturity_rate'] * 0.85
+    if 'high_rate_ratio' in weak:
+        weak['high_rate_ratio'] = weak['high_rate_ratio'] * 0.85
+    scenarios['弱分流情景（避险偏好上升）'] = weak
+
+    return scenarios
+
+
+def build_recent_feature_matrix(historical_df, feature_engine, feature_names, window_size=8, last_n=12):
+    """构建近年滚动窗口特征矩阵，用于结构漂移监测"""
+    if historical_df is None or len(historical_df) < window_size:
+        return None
+
+    rows = []
+    start_idx = max(0, len(historical_df) - last_n - window_size + 1)
+    for i in range(start_idx, len(historical_df) - window_size + 1):
+        w = historical_df.iloc[i:i+window_size]
+        series = {}
+        for col in ['growth_gap', 'maturity_rate', 'high_rate_ratio']:
+            if col in w.columns:
+                series[col] = w[col].values
+        if not series:
+            continue
+        feats = feature_engine.extract_all_features(series)
+        feats.update(feature_engine.calculate_cross_features(series))
+        rows.append([feats.get(name, 0) for name in feature_names])
+
+    return np.array(rows, dtype=float) if rows else None
+
+
+def monte_carlo_scenario_assessment(feature_engine, detector, feature_names,
+                                    scenario_forecast, output_dir, scenario_name,
+                                    recent_feature_matrix=None, n_sim=300, perturb_ratio=0.1):
+    """对单个情景执行Monte Carlo，输出风险分布"""
+    rng = np.random.default_rng(42)
+    risk_samples = []
+    lr_samples = []
+
+    risk_assessor = StructuralRiskAssessor(detector)
+
+    for _ in range(n_sim):
+        simulated = {}
+        for key, values in scenario_forecast.items():
+            base = np.array(values, dtype=float)
+            scale = np.maximum(np.abs(base) * perturb_ratio, 1e-4)
+            simulated[key] = base + rng.normal(0, scale, size=len(base))
+
+        forecast_features_dict = feature_engine.extract_all_features(simulated)
+        forecast_features_dict.update(feature_engine.calculate_cross_features(simulated))
+        forecast_vector = [forecast_features_dict.get(name, 0) for name in feature_names]
+
+        assessment = risk_assessor.generate_risk_assessment(
+            forecast_vector,
+            feature_names,
+            recent_feature_matrix=recent_feature_matrix
+        )
+        risk_samples.append(assessment['risk_index'])
+        lr_samples.append(assessment['score_breakdown']['lr_score'])
+
+    risk_arr = np.array(risk_samples, dtype=float)
+    lr_arr = np.array(lr_samples, dtype=float)
+
+    summary = {
+        'scenario_name': scenario_name,
+        'risk_median': float(np.median(risk_arr)),
+        'risk_mean': float(np.mean(risk_arr)),
+        'risk_p05': float(np.percentile(risk_arr, 5)),
+        'risk_p95': float(np.percentile(risk_arr, 95)),
+        'lr_median': float(np.median(lr_arr)),
+        'samples': risk_arr,
+    }
+    return summary
+
+
+def aggregate_weighted_risk(scenario_summaries, scenario_weights):
+    """按情景概率权重汇总综合风险"""
+    weighted = 0.0
+    total_weight = 0.0
+    for name, summary in scenario_summaries.items():
+        w = scenario_weights.get(name, 0)
+        weighted += w * summary['risk_mean']
+        total_weight += w
+    if total_weight <= 0:
+        return 0.0
+    return weighted / total_weight
+
+
+def run_scenario_analysis(feature_engine, detector, feature_names, baseline_forecast,
+                          historical_df, output_dir='results'):
+    """三情景+Monte Carlo分布分析"""
+    print("\n" + "=" * 60)
+    print("🧭 步骤4: 三情景风险分析（含Monte Carlo）")
+    print("=" * 60)
+
+    scenario_dir = os.path.join(output_dir, 'scenario_analysis')
+    if not os.path.exists(scenario_dir):
+        os.makedirs(scenario_dir)
+
+    scenarios = generate_scenario_forecasts(baseline_forecast)
+    recent_matrix = build_recent_feature_matrix(historical_df, feature_engine, feature_names)
+
+    # 可配置情景权重（可在后续接入外部输入）
+    scenario_weights = {
+        '基准情景（经济温和修复）': 0.5,
+        '强触发情景（集中到期与市场分流共振）': 0.3,
+        '弱分流情景（避险偏好上升）': 0.2,
+    }
+
+    scenario_results = {}
+    for scenario_name, forecast_data in scenarios.items():
+        print(f"\n🔎 评估情景: {scenario_name}")
+        scenario_subdir = os.path.join(
+            scenario_dir,
+            scenario_name.replace('（', '_').replace('）', '').replace('与', '_').replace(' ', '_')
+        )
+        if not os.path.exists(scenario_subdir):
+            os.makedirs(scenario_subdir)
+
+        # 点估计
+        _, point_assessment = run_2026_assessment(
+            feature_engine,
+            detector,
+            feature_names,
+            forecast_data,
+            output_dir=scenario_subdir,
+            recent_feature_matrix=recent_matrix
+        )
+
+        # 分布估计
+        mc_summary = monte_carlo_scenario_assessment(
+            feature_engine,
+            detector,
+            feature_names,
+            forecast_data,
+            output_dir=scenario_subdir,
+            scenario_name=scenario_name,
+            recent_feature_matrix=recent_matrix,
+            n_sim=300,
+            perturb_ratio=0.1,
+        )
+
+        scenario_results[scenario_name] = {
+            'forecast': forecast_data,
+            'assessment': point_assessment,
+            'possibility': point_assessment['risk_index'] / 100.0,
+            'mc_summary': mc_summary,
+            'weight': scenario_weights.get(scenario_name, 0),
+        }
+
+    integrated_risk = aggregate_weighted_risk(
+        {k: v['mc_summary'] for k, v in scenario_results.items()},
+        scenario_weights,
+    )
+
+    # 绘制情景对比图（均值+区间）
+    try:
+        import matplotlib.pyplot as plt
+
+        names = list(scenario_results.keys())
+        risk_means = [scenario_results[n]['mc_summary']['risk_mean'] for n in names]
+        risk_low = [scenario_results[n]['mc_summary']['risk_p05'] for n in names]
+        risk_high = [scenario_results[n]['mc_summary']['risk_p95'] for n in names]
+        yerr = [np.array(risk_means) - np.array(risk_low), np.array(risk_high) - np.array(risk_means)]
+        colors = ['#3498DB', '#E74C3C', '#2ECC71']
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.bar(range(len(names)), risk_means, color=colors, alpha=0.85, label='风险均值')
+        ax.errorbar(range(len(names)), risk_means, yerr=yerr, fmt='none', ecolor='black', capsize=6,
+                    label='90%区间')
+
+        ax.axhline(70, color='red', linestyle='--', alpha=0.6, label='高风险阈值')
+        ax.axhline(50, color='orange', linestyle='--', alpha=0.6, label='中风险阈值')
+        ax.axhline(integrated_risk, color='purple', linestyle='-.', alpha=0.8,
+                   label=f'综合风险={integrated_risk:.1f}')
+
+        ax.set_xticks(range(len(names)))
+        ax.set_xticklabels(names, rotation=12, ha='right')
+        ax.set_ylabel('风险指数')
+        ax.set_title('2026年三情景风险分布对比（Monte Carlo）')
+        ax.grid(True, axis='y', alpha=0.3)
+        ax.legend(loc='upper right')
+
+        for bar, value in zip(bars, risk_means):
+            ax.text(bar.get_x() + bar.get_width() / 2, value + 1, f'{value:.1f}',
+                    ha='center', va='bottom', fontsize=10)
+
+        plt.tight_layout()
+        scenario_plot = os.path.join(scenario_dir, 'scenario_risk_comparison.png')
+        plt.savefig(scenario_plot, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"📈 情景对比图保存到: {scenario_plot}")
+    except Exception as e:
+        print(f"⚠️ 情景对比图绘制失败: {e}")
+
+    # 生成情景分析文本
+    lines = [
+        '=' * 80,
+        '2026年三情景存款搬家风险分析（Monte Carlo）',
+        '=' * 80,
+    ]
+    for name in scenarios.keys():
+        ass = scenario_results[name]['assessment']
+        mc = scenario_results[name]['mc_summary']
+        w = scenario_results[name]['weight']
+        lines.append(f"\n{name}")
+        lines.append('-' * 50)
+        lines.append(f"情景权重: {w:.0%}")
+        lines.append(f"点估计风险指数: {ass['risk_index']:.1f}/100")
+        lines.append(f"风险中位数: {mc['risk_median']:.1f}")
+        lines.append(f"风险均值: {mc['risk_mean']:.1f}")
+        lines.append(f"90%区间: [{mc['risk_p05']:.1f}, {mc['risk_p95']:.1f}]")
+        lines.append(f"发生可能性(近似概率): {mc['risk_mean']:.1f}%")
+        lines.append(f"风险等级: {ass['risk_level']}")
+        lines.append(f"解释: {ass['risk_description']}")
+
+    lines.append('\n' + '-' * 50)
+    lines.append(f"综合风险（情景加权）: {integrated_risk:.1f}/100")
+
+    txt_path = os.path.join(scenario_dir, 'scenario_analysis_report.txt')
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    print(f"📄 情景分析报告保存到: {txt_path}")
+
+    return scenario_results, integrated_risk
 
 def generate_2026_forecast(historical_df, n_quarters=4):
     """
@@ -713,18 +975,23 @@ def main(data_file=None, output_dir='results'):
         else:
             print(f"\n✅ 模型稳健性良好 (正确识别率: {metrics['correct_rate']:.1%})")
 
-        # 7. 生成2026年预测数据
+        # 7. 生成2026年预测数据（基准情景）
         forecast_2026 = generate_2026_forecast(historical_df, n_quarters=4)
 
-        # 8. 2026年风险评估
+        # 8. 基准情景风险评估
         risk_assessor, assessment = run_2026_assessment(
             feature_engine, detector, feature_names, forecast_2026, output_dir
         )
 
-        # 9. 创建高级可视化
+        # 9. 三情景分析
+        scenario_results, integrated_risk = run_scenario_analysis(
+            feature_engine, detector, feature_names, forecast_2026, historical_df, output_dir
+        )
+
+        # 10. 创建高级可视化
         create_advanced_visualization(historical_df, assessment, forecast_2026, output_dir)
 
-        # 10. 生成最终综合报告
+        # 11. 生成最终综合报告
         print("\n" + "=" * 60)
         print("📑 步骤6: 生成最终综合报告")
         print("=" * 60)
@@ -746,8 +1013,11 @@ def main(data_file=None, output_dir='results'):
         report_lines.append(f"事件窗口数: {len(event_window_data)}个")
         report_lines.append(f"特征维度: {len(feature_names)}维")
         report_lines.append(f"模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
-        report_lines.append(f"ROC AUC: {metrics.get('auc', 0):.3f}")
-        report_lines.append(f"PR AUC: {metrics.get('pr_auc', 0):.3f}")
+        report_lines.append(f"ROC曲线下面积: {metrics.get('auc', 0):.3f}")
+        report_lines.append(f"PR曲线下面积: {metrics.get('pr_auc', 0):.3f}")
+        report_lines.append(f"ROC AUC置信区间(90%): [{metrics.get('auc_ci_low', 0):.3f}, {metrics.get('auc_ci_high', 0):.3f}]")
+        if 'rolling_auc' in metrics:
+            report_lines.append(f"滚动回测ROC曲线下面积: {metrics.get('rolling_auc', 0):.3f}")
 
         report_lines.append(f"\n🎯 2026年风险评估")
         report_lines.append("-" * 40)
@@ -760,9 +1030,9 @@ def main(data_file=None, output_dir='results'):
         report_lines.append("-" * 40)
         if assessment:
             breakdown = assessment['score_breakdown']
-            report_lines.append(f"log P_event: {breakdown['log_event']:.3f}")
-            report_lines.append(f"log P_normal: {breakdown['log_normal']:.3f}")
-            report_lines.append(f"LR分数: {breakdown['lr_score']:.3f}")
+            report_lines.append(f"事件分布对数似然: {breakdown['log_event']:.3f}")
+            report_lines.append(f"正常分布对数似然: {breakdown['log_normal']:.3f}")
+            report_lines.append(f"似然比分数: {breakdown['lr_score']:.3f}")
 
         report_lines.append(f"\n🎯 关键风险特征 (Top 5)")
         report_lines.append("-" * 40)
@@ -806,6 +1076,18 @@ def main(data_file=None, output_dir='results'):
                 report_lines.append("   3. 完善风险管理流程和体系")
                 report_lines.append("   4. 加强团队培训和能力建设")
 
+        report_lines.append(f"\n🧭 三情景分析结论")
+        report_lines.append("-" * 40)
+        if scenario_results:
+            for s_name, s_result in scenario_results.items():
+                s_ass = s_result['assessment']
+                mc = s_result.get('mc_summary', {})
+                report_lines.append(
+                    f"{s_name}: 风险均值={mc.get('risk_mean', s_ass['risk_index']):.1f}, "
+                    f"90%区间=[{mc.get('risk_p05', s_ass['risk_index']):.1f}, {mc.get('risk_p95', s_ass['risk_index']):.1f}], "
+                    f"等级={s_ass['risk_level']}"
+                )
+
         report_lines.append(f"\n📁 输出文件清单")
         report_lines.append("-" * 40)
         report_lines.append(f"1. {output_dir}/feature_engineering/ - 特征工程结果")
@@ -828,14 +1110,15 @@ def main(data_file=None, output_dir='results'):
 
         print(f"\n📊 核心结果:")
         print(f"   模型稳健性(准确率): {metrics.get('correct_rate', 0):.1%}")
-        print(f"   ROC AUC: {metrics.get('auc', 0):.3f}")
+        print(f"   ROC曲线下面积: {metrics.get('auc', 0):.3f}")
         if assessment:
             print(f"   2026年风险指数: {assessment['risk_index']:.1f}/100")
             print(f"   风险等级: {assessment['risk_level']}")
+        print(f"   综合风险（情景加权）: {integrated_risk:.1f}/100")
 
         print(f"\n💡 系统特点:")
         print(f"   • 基于结构特征而非简单规则")
-        print(f"   • 三层评分体系（水平/结构/形态）")
+        print(f"   • 双分布似然比评分体系（事件/正常）")
         print(f"   • 稳健的模型验证（留一窗口法）")
         print(f"   • 可解释的风险贡献分析")
         print(f"   • 高级可视化展示")

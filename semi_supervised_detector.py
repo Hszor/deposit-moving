@@ -74,6 +74,25 @@ class SemiSupervisedDetector:
             'feature_llr': feature_llr,
         }
 
+
+    def feature_sensitivity(self, x, epsilon=1e-3):
+        """数值微分近似的特征敏感性：d(风险指数)/d(feature)"""
+        x = np.asarray(x, dtype=float)
+        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        base_lr = self.score(x)
+        base_risk = self.risk_index(base_lr)
+
+        sensitivities = {}
+        for i, name in enumerate(self.feature_names):
+            step = epsilon * max(1.0, abs(x[i]))
+            x_perturb = x.copy()
+            x_perturb[i] += step
+            risk_perturb = self.risk_index(self.score(x_perturb))
+            sensitivities[name] = (risk_perturb - base_risk) / step
+
+        return sensitivities
+
     @staticmethod
     def _sigmoid(x):
         x = np.clip(x, -60, 60)
