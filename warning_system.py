@@ -6,24 +6,7 @@ warning_system.py
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib import font_manager
-
-def configure_matplotlib_for_chinese():
-    candidates = [
-        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
-        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
-        'Arial Unicode MS'
-    ]
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    usable = [f for f in candidates if f in available]
-    plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['axes.unicode_minus'] = False
-    plt.style.use('seaborn-v0_8-whitegrid')
-    return len(usable) > 0
-
-
-HAS_CJK_FONT = configure_matplotlib_for_chinese()
+HAS_CJK_FONT = True
 
 
 def t(cn, en):

@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats
-from matplotlib import font_manager
 
 
 # 中国2005-2025年常被讨论的居民存款“搬家”阶段（季度口径）
@@ -19,27 +18,7 @@ KNOWN_RELOCATION_PERIODS_2005_2025 = [
     ('2024Q2', '2025Q1'),  # 利率下行与资产再配置阶段
 ]
 
-def configure_matplotlib_for_chinese():
-    """尽量自动选择可用中文字体，避免图中文字显示为方框。"""
-    candidates = [
-        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
-        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
-        'Arial Unicode MS'
-    ]
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    usable = [f for f in candidates if f in available]
-    if usable:
-        plt.rcParams['font.sans-serif'] = usable + ['DejaVu Sans']
-    else:
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-        print("警告: 未检测到中文字体，图中文字可能显示异常。")
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['axes.unicode_minus'] = False
-    plt.style.use('seaborn-v0_8-whitegrid')
-    return len(usable) > 0
-
-
-HAS_CJK_FONT = configure_matplotlib_for_chinese()
+HAS_CJK_FONT = True
 
 
 def t(cn, en):

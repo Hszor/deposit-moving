@@ -7,7 +7,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import warnings
-from matplotlib import font_manager
 
 warnings.filterwarnings('ignore')
 
@@ -19,23 +18,6 @@ from historical_analysis import (
 )
 from warning_system import EarlyWarningSystem
 from scenario_analysis import ScenarioAnalysis
-
-def configure_matplotlib_for_chinese():
-    candidates = [
-        'SimHei', 'Microsoft YaHei', 'PingFang SC', 'Heiti SC',
-        'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Zen Hei',
-        'Arial Unicode MS'
-    ]
-    available = {f.name for f in font_manager.fontManager.ttflist}
-    usable = [f for f in candidates if f in available]
-    plt.rcParams['font.sans-serif'] = (usable + ['DejaVu Sans']) if usable else ['DejaVu Sans']
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['axes.unicode_minus'] = False
-    plt.style.use('seaborn-v0_8-whitegrid')
-
-
-configure_matplotlib_for_chinese()
-
 
 def print_section(title):
     """统一的分节输出样式，提升终端可读性"""
@@ -256,6 +238,14 @@ def run_2026_known_window_assessment(historical_df, scenario_analyzer):
 def main():
     """主函数"""
     print_section("居民存款流向分析系统 | 版本 1.1（可视化增强版）")
+
+    # 在创建分析器之前，手动设置字体
+    import matplotlib.pyplot as plt
+    import matplotlib
+
+    # 方法A: 直接设置字体
+    plt.rcParams['font.sans-serif'] = ['SimHei']  # 或 'Microsoft YaHei'
+    plt.rcParams['axes.unicode_minus'] = False
 
     # 创建结果目录
     import os
